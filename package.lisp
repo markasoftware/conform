@@ -2,16 +2,10 @@
 
 (defpackage #:conform
   (:use #:cl #:alexandria)
-  (:export #:defconformlet
-           #:with-conform
-           #:birth
-           #:render-whole-form
+  (:export #:conformlet
+           #:conform
+           #:render-form
 
-           #:string-field
-           #:text-field
-           #:button-field
-           #:checkbox-field
-           #:radio-field
-           #:select-field
-           #:list-field
+           #:string-input
+           #:select-input
            ))

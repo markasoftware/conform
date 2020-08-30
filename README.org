@@ -1,0 +1,534 @@
+#+TITLE: Interactive HTML Forms in Common Lisp
+
+# * The Problem
+#   I like server-side rendering. It doesn't piss off people who have JavaScript
+#   disabled. I get to write less overall code. And, all the code I write can be
+#   in true Common Lisp! But at the same time, I like to make websites that have
+#   complex interactivity. The only option for me, then, is to make relatively
+#   complex HTML <form>s. What do I mean by complex?
+#   + The form contains lists, with buttons to add new items, remove existing
+#     items, and reorder items. Other compound data types are not out of the
+#     question either.
+#   + The form checks the validity of each field (eg, max length, allowed
+#     characters) and prints error messages when validation fails.
+#   My main use case for these forms is to represent and update a large Lisp
+#   object (which might be stored in memory, in a database, or anywhere). On
+#   initial page load, the form fields are automatically filled out with the
+#   existing contents of the object. When the form is submitted, the object is
+#   updated based on the user's input.
+# ** Idea 1: The PHP way
+# ** Idea 2: "Forumla"
+# ** Idea 3: Pseudo-events
+#    Late at night, I thought back to the most common mistake that beginners make
+#    when designing an HTML form: Verifying its validity in JavaScript. People
+#    usually make this mistake before they have a strong understanding of the
+#    client-server model of the web, so they don't understand that JavaScript can
+#    be tampered with to disable the form validation.
+
+#    My revelation though, came when thinking about /why/ beginners make this
+#    mistake. Why is it many people's first instinct to verify forms on the
+#    client side rather than the server? Because it's /easier/. The JavaScript
+#    APIs for validating and modifying forms are a million times easier to use
+#    than the two form handling ideas I described above. Verifying a form in
+#    JavaScript is as simple as this:
+
+#    #+BEGIN_SRC html
+#    <input type="text" value="initial content" onchange="if (this.value.length > 20) this.value = this.value.slice(0,20)">
+#    #+END_SRC
+   
+#    (though HTML5 provides attributes that actually would allow you to enforce
+#    the length of the field without any JS at all).
+
+#    After thinking this, I wanted to build a /pseudo-event-based form framework/
+#    that makes verifying a form on the backend as easy as verifying a form on the
+#    frontend. Here's a translation of the above input into what's possible with
+#    Formula:
+   
+#    #+BEGIN_SRC lisp
+#      (defformula max-length-input val (len)
+#        (let ((err))
+#          (render
+#           (list
+#            (when err
+#              `(span (class "error") err))
+#            (input-text val
+#                        :onsubmit (lambda (new-val)
+#                                    (if (> (length new-val) len)
+#                                        (setf err (format nil "Max length: ~a" len))
+#                                        (setf val new-val))))))))
+#    #+END_SRC
+   
+#    ~val~ is a symbolic macro pointing to 
+   
+#    How can this possibly work, on the server side?
+#    1. The ~with-formula~ body is evaluated. When an event handler is
+#       encountered, it is evaluated if appropriate. The output HTML of this run
+#       is discarded. The "value" of the form may have been updated.
+#    2. The ~with-formula~ body is evaluated again, using the updated value from
+#       the last run. This time, event handlers are ignored and the output HTML is
+#       recorded.
+   
+#    There are two rules:
+#    1. No side effects in ~render~ except in event handlers. (The body of
+#       ~render~ is evaluated multiple times).
+#    2. Event handlers do not "temporarily" add new fields. Put differently, the
+#       value passed in must fully determine the fields present in the HTML
+#       output.
+      
+#    The last restriction could probably be eased with a continuations library,
+#    such as the one used in Weblocks, but keeping track of the environment across
+#    multiple HTTP requests is a whole bag of worms I'm not going to get into.
+   
+#    Composition is trivial:
+   
+#    #+BEGIN_SRC lisp
+#      (defvar *length-40-input* (max-length-input 40))
+
+#      (defmacro full-name (val)
+#        `(formula
+#          (render
+#           `(div ()
+#                 "Please enter your first and last names:"
+#                 ,()
+#                 ,(max-length-input (cdr val) 40)))))
+#    #+END_SRC
+   
+#    Defining a "base" element, namely ~input-text~:
+
+#    #+BEGIN_SRC lisp
+#      (defformula-raw input-text (val name-var post-alist &key onsubmit)
+#        ;; the first form generates the output HTML from val and name-var.
+#        ;; post-alist is not necessarily bound.
+#        `((input (type "text" name ,(incf name-var) value ,val)))
+#        ;; the second form evaluates event handlers. All lambda-list entries are
+#        ;; bound.
+#        (when-let ((new-val (getf post-alist (incf name-var))))
+#          (funcall onsubmit new-val)))
+#    #+END_SRC
+   
+#    Now, let's define a list, where each item can be an arbitrary formula:
+   
+#    #+BEGIN_SRC lisp
+#      (defmacro deflistformula (name subformula)
+#        (with-gensyms (val-var it-var)
+#          `(defformula ,name ,val-var
+#             (render
+#              (loop for ,it-var in ,val-var
+#                 append (,subformula))))))
+#    #+END_SRC
+   
+#    #+BEGIN_SRC lisp
+#      (defformify lengthed-field (val max-length)
+#        (let ((err))
+#          (with-formify
+#              `(div ()
+#                    ,(when err
+#                       `(span (class "error") ,err))
+#                    ,(f/child :main
+#                              (text-field val (lambda (new-val)
+#                                                (if (<= (length new-val) max-length)
+#                                                    (setf val new-val)
+#                                                    (setf err "Too long!")))))))))
+#    #+END_SRC
+   
+#    #+BEGIN_SRC lisp
+#      (defformify list-field ())
+#    #+END_SRC
+# * The big problems
+# ** Order of event execution
+#    Barely a problem, since we discovered that order is well-defined intuitively.
+
+#    The events should be handled in either the order specified in the child
+#    creation statement, the default order specified in the formifier itself, then
+#    in the order the child formifiers were instantiated.G
+# ** Sub-formifier state
+#    Each formifier instantiates other formifiers. Sometimes, after submission, it
+#    reorders existing formifiers, adds additional formifiers, or replaces a
+#    formifier with another. In these cases, it's not obvious which new formifier
+#    corresponds to each old formifier. The two possible solutions are requiring
+#    the user to create formifiers outside of the render body, or providing a
+#    unique id to each formifier so that if the user attempts to instantiate a
+#    formifier with an id that was already used, the existing formifier is used.
+#    The downside of this last technique is that, for example, replacing a
+#    formifier in-place with a different formifier requires a different id.
+   
+#    Ids can be automatically generated much of the time: For child-data
+#    formifiers, the data passed in (tested via eql), and for formifiers without
+#    data, as an increasing integer. This works for, for example, shuffling a
+#    list: If you shuffle ~val~, the list elements are still ~eql~ to the list
+#    elements at the original position, so if the id is ~val~, the correct
+#    formifier will be chosen for each one.
+# *** Smart ID generation
+#     When the data being passed in has meaningful reference equality (not number,
+#     character, or symbol), we use that as the ID. Additionally, if the
+#     subconformlet changes the object, we store an edge from the new value to the
+#     old value to keep track of changing values.
+    
+#     When using smart ID generation, it's safe to use any symbol as custom IDs
+#     for specific fields, since all other IDs will either be
+#     reference-equality-able (not symbols) or they will be gensyms (when doing
+#     the order thing).
+# *** Wrappers
+#     For a list:
+
+#     #+BEGIN_SRC lisp
+#       (defconformlet safe-list (subconformlet default-item) val
+#         ;; wrap each item with cons
+#         (let ((wrapped-val (mapcar #'list val)))
+#           (with-conform ()
+#             `((div ("list")
+#                    ,(loop for item in wrapped-val
+#                        collect `(div (class "list-item")
+#                                      (conformlet subconformlet
+#                                                  ;; data is the correct data, id has
+#                                                  ;; meaningful reference equality.
+#                                                  :data (car item) :id item)))
+#                    ,(conformlet (button-field "Add New")
+#                                 :id :add
+#                                 :onclick (appendf wrapped-val (list default-item)))
+#                    ,(conformlet (button-field "Shuffle")
+#                                 :id :shuffle
+#                                 :onclick (setf wrapped-val (shuffle wrapped-val)))))
+#             ;; unwrap each item
+#             (setf val (mapcar #'car wrapped-val)))))
+#     #+END_SRC
+# ** Passing formifiers as arguments
+#    Shouldn't be a huge problem, although it might be necessary to make the
+#    syntax more unwieldy in one place or another.
+   
+#    The "configurator" (toplevel function) takes whatever arguments the user
+#    wants.
+
+#    The "instantiator" (returned from the configurator) does not necessarily need
+#    any arguments, but a data conformlet will take as arguments a) the data and
+#    b) writer function to update the data.
+   
+#    An instantiated formifier must expose two methods:
+#    + render: Called with an iterator which, when called, returns the next field
+#      name.
+#    + handle-events: Called with an iterator, which, when called, returns the
+#      next post value.
+# ** Parallel Structure: events vs updating the data
+#    Why should the lowest-level text fields use an ~:onsubmit~ while the
+#    higher-level formifiers update the ~val~ instead? We can ditch events and
+#    just have everything update val. But then all formifiers are required to be
+#    associated with data, and we can't just have a button with onclick, for
+#    example. Alternately, everything can be events, and everything just passes
+#    data up through onsubmit listeners. When do you call it, though? Do you
+#    ~prog1~, returning the html and then calling the event handler afterwards? Or
+#    a second form argument to ~defformify~ that is exclusively for calling
+#    handlers?
+   
+#    Solution: Formifiers always call their onsubmit, and parents always register
+#    it. But, "data formifiers" implicitly call onsubmit with ~val~ after all
+#    other children event handlers have fired, and when the parent instantiates a
+#    child using a "child data" statement, an automatic onsubmit handler is
+#    generated that updates ~val~ with the argument passed to the event handler.
+#    In this way, both children and parents can choose either a setf or
+#    event-based way to pass around data interoperably.
+
+* Conform: An improvement on Formlets
+   A Common Lisp library for constructing composable, interactive HTML forms,
+   entirely on the server-side.
+   + Composable: Parts of a form can be re-used. For example, there might be a
+     datepicker form element that you will want to include in multiple places
+     throughout a form. "Higher-order" parts of a form are also possible, for
+     example, a 
+   + Interactive: The way a form part is rendered may change depending on the
+     user's actions. For example, a resizeable list with "add" and "remove"
+     buttons is possible. Each element of the list can contain more form fields!
+     Form field validation also falls under the banner of interactivity.
+   Formlets, the most well-known solution to form composability, was presented
+   in a 2008 paper, [[https://links-lang.org/papers/formlets-essence.pdf][The Essence of Form Abstraction]]. Formlets, the name of the
+   solution presented in that paper, have since been implemented in many
+   programming languages, including [[https://docs.racket-lang.org/web-server/formlets.html][Racket]] and [[https://github.com/Inaimathi/formlets][Common Lisp]]. Formlets achieve
+   composability, but not interactivity. It's impossible to define a "list"
+   formlet that contains a varying number of child formlets based on which
+   buttons the user clicks.
+
+   Conform still uses a formlet-like design, so we credit the paper's authors by
+   naming each composable form component a "conformlet".
+   
+   Conform is optimized for making forms that represent a persistent server-side
+   object, rather than forms you prepare and then submit once. For instance,
+   Conform would be a great choice for rendering an "edit profile" page.
+   
+   Conform is not tightly coupled to any web server. However, all built-in
+   conformlets, and all the examples here, are tied to a certain HTML generator:
+   [[https://gist.github.com/markasoftware/ab357f1b967b3f656d026e33fec3bc0e][html->string]]. You may find it helpful to read the html->string documentation
+   before continuing. To use any other HTML generator you would have to
+   reimplement all built-in conformlets, but wouldn't have to mess with the
+   Conform framework itself.
+** Simple field composition
+   Before we can talk about the juicy interactive conformlets, we have to
+   discuss how to make a simple conformlet. Here's one:
+
+   #+BEGIN_SRC lisp
+     (defun full-name ()
+       ;; val should be of the form ("first-name" . "last-name")
+       (conformlet (:val val)
+        `(div (class "full-name-field")
+              ,(conform (string-field "First Name")
+                        ;; the data argument becomes the "val" for the sub-conformlet.
+                        :val (car val))
+              ,(conform (string-field "Last Name")
+                        :val (cdr val)))))
+   #+END_SRC
+   
+   ~conformlet~ is used to create a new conformlet. ~conform~ is used to
+   instantiate a child conformlet. ~conform~ is a lexically scoped macro only
+   available within ~conformlet~.
+   
+   The ~:val~ argument to ~conform~ is passed as the ~:val~ argument of
+   corresponding conformlet. It can be updated using ~setf~, which updates the
+   corresponding place in the parent conformlet.
+   
+   In the ~full-name~ example, we could have just done ~(defvar \*full-name\*
+   (conformlet ...))~, but it's better to be consistent by always using
+   functions to generate conformlets, because sometimes you want to accept
+   configuration options as arguments.
+
+   Here's another conformlet: A number with buttons to increase or decrease it
+   by a certain amount:
+   
+   #+BEGIN_SRC lisp
+     (defun onerous-number (delta)
+       (conformlet (:val val)
+         (declare (integer val))
+         `(div (class "onerous-number")
+               "The number currently is: " val
+               (conform (button-field "Increment it")
+                        :onclick (lambda () (incf val delta)))
+               (conform (button-field "Decrement it")
+                        :onclick (lambda () (decf val delta))))))
+   #+END_SRC
+   
+   There are a few new things to see here:
+   + A ~delta~ parameter captured in a closure around ~conformlet~ makes it easy
+     to configure.
+   + ~declare~, which I could have used in the first example, too.
+   + Direct modification of val, not just parts of val (such as car or cdr).
+   + Button conformlets that do not take a ~:val~ argument.
+     
+   Here's a "higher-order" conformlet that duplicates a field:
+
+   #+BEGIN_SRC lisp
+     (defun duplicator (subconformlet)
+       (conformlet (:val val)
+         `(div (class "duplicator")
+               ,(conform subconformlet :val (car val))
+               ,(conform subconformlet :val (cdr val)))))
+   #+END_SRC
+
+   By default, ~:val~ tells subconformlets not only where to get their data
+   from, but where to store their data to. If you specify an ~:onsubmit~ event
+   handler, the "return" data from the subconformlet will be passed there
+   instead of automatically being stored to the place indicated by ~:val~.
+   /However/, a subconformlet may modify parts (eg, cells) of ~:val~ even if you
+   specify a custom ~:onsubmit~ handler; the subconformlet simply cannot replace
+   ~:val~ itself.
+   
+   #+BEGIN_SRC lisp
+     (defun uppercase-field (subconformlet)
+       (conformlet (:val val)
+         (declare (string val))
+         (conform subconformlet
+                  :val val
+                  :onsubmit (lambda (new-val)
+                              (setf val (string-upcase new-val)))))
+   #+END_SRC
+   
+   The val and onsubmit stuff is handled automatically when /definining/ a
+   conformlet. Simply modify ~val~ directly, and Conform will store to the
+   parent's ~:val~ or call its ~:onsubmit~ as appropriate.
+   
+   Custom events! So far you've only seen events defined on built-in conformlets
+   (namely as ~:onclick~ for buttons) and ~:onsubmit~, which is automatically
+   generated for all conformlets that take a ~val~. Here's a different
+   conformlet, that does /not/ take a ~val~, and that has a custom event
+   handler, ~:onagree~:
+
+   #+BEGIN_SRC lisp
+     (defun legal-agreements ()
+       (conformlet (:extra-args (onagree))
+         (let ((agreed-tos)
+               (agreed-privacy-policy)
+               (agreed-forfeit-assets))
+
+           ;; this will be run after all other event handlers have been run.
+           (custom-event
+            (when (and agreed-tos agreed-privacy-policy agreed-forfeit-assets)
+              (funcall onagree)))
+
+           `(div (class "legal-agreements")
+                 ,(conform (checkbox-field "Do you agree to the terms of service?")
+                           :val agreed-tos)
+                 ,(conform (checkbox-field "Do you agree to the privacy policy?")
+                           :val agreed-privacy-policy)
+                 ,(conform (checkbox-field "Do you agree to forfeit all of your assets
+                                          to EvilCorp LLC, permanently?")
+                           :val agreed-forfeit-assets)))))
+   #+END_SRC
+   
+   Do /not/ use ~:extra-args~ to specify configuration-esque options; put those
+   as arguments to the top-level ~defun~. ~:extra-args~ should usually be used
+   for event handlers.
+   
+   Sometimes the order that the events handlers of children are called is
+   important. Say I want a field with a "reset" button next to it that restores
+   some default value. The reset button's ~onclick~ handler will reset the field
+   to the default value. The ~onsubmit~ handler on the field itself will store
+   the user's enteredvalue. If ~onclick~ is called before ~onsubmit~, it will be
+   impossible to actually reset the field! Luckily, we can do this:
+
+   #+BEGIN_SRC lisp
+     (defun resettable-field (subconformlet default)
+       (conformlet (:val val)
+        `(div (class "resettable")
+              ,(conform (button-field "Reset")
+                        :onclick (lambda () (setf val default))
+                        :order 100)
+              ,(conform subconformlet
+                        :val val))))
+   #+END_SRC
+   
+   The default ~:order~ is zero, so the event handlers on the button field (and
+   any of its descendants, of which there are none) are called after the event
+   handler on the main field.
+** Interactive Conformlets
+   Here comes the fun part!
+   
+   #+BEGIN_SRC lisp
+     (defun simple-list (subconformlet default)
+       (conformlet (:val val)
+        `(div (class "simple-list")
+              ,(loop for item in val
+                  collect (conform subconformlet :val item))
+              ,(conform (button-field "Add New")
+                        :onclick (lambda () (metatilities:push-end default val))))))
+   #+END_SRC
+   
+   Ain't that easy? Here's a more advanced list:
+   
+   #+BEGIN_SRC lisp
+     (defun better-list (subconformlet default-options)
+       "Default-options should be in the same format as the main argument to select-field. Eg:
+             ((45 \"Forty Five\") (:beep \"Beep\"))
+        will present two options, labeled
+        Forty Five and Beep, which will select the values 45 and :beep,
+        respectively."
+       (conformlet (:val val)
+
+        (let ((selected-option (caar default-options)))
+
+          `(div (class "better-list")
+
+                ,(loop for item in val
+                    for i from 0
+                    collect `(div (class "better-list-item")
+                                  ,(conform subconformlet :val item)
+                                  ,(conform (button-field "Delete item")
+                                            :onclick (lambda () (metatilities:delete-item-at val i)))))
+
+                ,(conform (select-field default-options
+                                        :val selected-option))
+                ,(conform (button-field "Add New")
+                          :onclick (lambda () (metatilities:push-end selected-option val)))))))
+   #+END_SRC
+   
+   We've added an option to delete each item of the list, and provide multiple
+   options for the "add new" button. Note that although event order is important
+   (eg, the subconformlet for the main list data must fire before the delete
+   handler), we don't explicitly specify an order; by default, events occur in
+   the order that the conformlets are instantiated.
+** Rendering a form: ~render-form~
+   Once you've defined all the conformlets you need, render the form:
+   
+   #+BEGIN_SRC lisp
+     (html->string
+      `(form (method "POST" action "")
+             (render-form "form_prefix" #'hunchentoot:post-parameter
+               (conformlet ()
+                 (conform (some-field) :val whatever)
+                 ;; I don't care about onclick, it's just want a button that will submit the form.
+                 (conform (button-field "Submit"))))))
+   #+END_SRC
+   
+   The first argument to ~render-form~ is a prefix that will be added to
+   the ~name~ attributes of all fields. The next argument is a function that
+   returns the value of a post parameter, given the string name of the post
+   parameter. The final parameter is a conformlet that will not be passed any
+   instance arguments (such as values or event listeners).
+** The elephant in the room: Validation
+   Every form framework has validation utilities. Even the original formlet
+   paper discusses a simple extension to the basic formlet system for it!
+   Unfortunately, the most user-friendly form validation doesn't play together
+   nicely with interactive forms, so we have to make compromises.
+
+   There are a few different ways to display the results of form validation. One
+   is to display all validation failures at the top of the page. Another is to
+   display validation failures right alongside the field that failed to
+   validate. The latter approach is problematic in Conform; it breaks the
+   important property that conformlets are pure functions of the ~val~ passed
+   in: the error message should only be displayed when the field fails
+   validation (during event handling), which means we need to store a boolean
+   ~failed-validation-p~ somewhere. We can't store the boolean in ~val~ since
+   it's not logically part of the conformlet's value (we don't want to return it
+   to the parent conformlet). Keeping track of arbitrary local state for each
+   conformlet is not trivial; each conformlet would need to keep track of "which
+   is which" among their children conformlets. For example, if you re-order
+   items of a list, you would need to somehow communicate that the conformlets
+   were rearranged, not just that the ~val~ was rearranged. React (a JavaScript
+   UI framework) has similar issues, and even their overengineered solution is
+   often requires manual intervention when dealing with editable lists.
+
+   Thus, the limit of Conform's validation is sad stuff like this:
+
+   #+BEGIN_SRC lisp
+     (defun verified-string (verifier error-text &rest string-field-args)
+       (conformlet (:val val)
+                   (conform (apply #'string-field string-field-args)
+                            :val val
+                            :onsubmit (lambda (new-val)
+                                        (if (funcall verifier new-val)
+                                            (setf val new-val)
+                                            (push error-text *form-errors*))))))
+   #+END_SRC
+   
+   You need some top level code to display the errors:
+
+   #+BEGIN_SRC lisp
+     ;; render-form dynamically binds *form-errors* to nil for us.
+     (render-form "my-prefix" #'hunchentoot:post-parameter
+       (conformlet ()
+         `(form (method "POST" action "")
+                ,(loop for error in *form-errors*
+                    collect `(div (class "form-validation-error") ,error))
+                (conform (some-other-conformlet) :val whatever))))
+   #+END_SRC
+   
+   I think having only top-level errors is acceptable for a couple reasons:
+   + If the form is especially large, people won't have to scroll through it to
+     find where they made a mistake -- it's all at the top.
+   + JavaScript can be used to perform preliminary client-side validation at the
+     point of the error. While the big point of a server-side-only form
+     framework is to avoid requiring JavaScript, there's nothing wrong with
+     progressively enhancing the webpage with JS.
+   + HTML5 supports a lot of form validation, even with JavaScript disabled,
+     through attributes such as [[https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attr-maxlength][maxlength]] and field types such as [[https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/url][url]], to help
+     the user find errors before submitting.
+** Other important stuff
+*** Side effects
+    The body of a ~conformlet~ form mustn't cause side effects. It's alright to
+    have side effects in an event handler, however.
+*** Order
+    Each child conformlet is given an Order:
+    1. Children with ~:order~ passed explicitly to ~conform~ are given the Order specified.
+    2. Any child that does not have an explicit Order is given a default Order
+       for that conformlet, specified using ~:order~ in the options argument of
+       ~conformlet~.
+    3. Any child that still does not have an Order is given an Order of zero.
+    The events of the children are evaluated from least to greatest Order. If
+    two children have the same Order, their event handlers are evaluated in the
+    order the children were instantiated.
+    
