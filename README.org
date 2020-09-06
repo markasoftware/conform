@@ -228,17 +228,17 @@
 #    event-based way to pass around data interoperably.
 
 * Conform: An improvement on Formlets
-   A Common Lisp library for constructing composable, interactive HTML forms,
-   entirely on the server-side.
-   + Composable: Parts of a form can be re-used. For example, there might be a
-     datepicker form element that you will want to include in multiple places
-     throughout a form. "Higher-order" parts of a form are also possible, for
-     example, a 
+   A Common Lisp library for constructing interactive, composable HTML forms,
+   entirely on the server-side; no JavaScript is necessary.
    + Interactive: The way a form part is rendered may change depending on the
      user's actions. For example, a resizeable list with "add" and "remove"
      buttons is possible. Each element of the list can contain more form fields!
      Form field validation also falls under the banner of interactivity.
-   Formlets, the most well-known solution to form composability, was presented
+   + Composable: Parts of a form can be re-used. For example, there might be a
+     datepicker form element that you will want to include in multiple places
+     throughout a form. "Higher-order" parts of a form are also possible, for
+     example, a resizeable list of arbitrary sub-conformlets.
+   The most well-known solution to server-side form composability, was presented
    in a 2008 paper, [[https://links-lang.org/papers/formlets-essence.pdf][The Essence of Form Abstraction]]. Formlets, the name of the
    solution presented in that paper, have since been implemented in many
    programming languages, including [[https://docs.racket-lang.org/web-server/formlets.html][Racket]] and [[https://github.com/Inaimathi/formlets][Common Lisp]]. Formlets achieve
@@ -259,6 +259,12 @@
    before continuing. To use any other HTML generator you would have to
    reimplement all built-in conformlets, but wouldn't have to mess with the
    Conform framework itself.
+** Installation
+   Conform will be available on Quicklisp soon, hopefully. Until then, just put
+   the project directory into an asdf load path.
+** Running the examples
+   `(conform/examples:start 4321)` starts a Hunchentoot server on
+   http://localhost:4321 with the Conform examples.
 ** Simple field composition
    Before we can talk about the juicy interactive conformlets, we have to
    discuss how to make a simple conformlet. Here's one:
@@ -447,11 +453,9 @@
    #+BEGIN_SRC lisp
      (html->string
       `(form (method "POST" action "")
-             (render-form "form_prefix" #'hunchentoot:post-parameter
-               (conformlet ()
-                 (conform (some-field) :val whatever)
-                 ;; I don't care about onclick, it's just want a button that will submit the form.
-                 (conform (button-field "Submit"))))))
+             ,(render-form "form_prefix" #'hunchentoot:post-parameter
+                           (some-field) :val whatever)
+             (button (type "submit") "Submit form")))
    #+END_SRC
    
    The first argument to ~render-form~ is a prefix that will be added to
