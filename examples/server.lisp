@@ -39,21 +39,32 @@
                                               :validate (lambda (new-val)
                                                           (member #\? (coerce new-val 'list)))
                                               :error "Password must contain a question mark"
-                                              :confirm-error "Enter the same password, thumbass!")
+                                              :confirm-error "Enter the same password, thumbass!"
+                                              :suppress-error-when-empty t)
                       :val password)))))
+
+(defun display-form-errors ()
+  (when *form-errors*
+    `((div (class "form-errors")
+           ,(loop for err in *form-errors*
+               collect `(div (style "color: red") ,err))))))
 
 (hunchentoot:define-easy-handler (profile-handler :uri "/profile") ()
   (html-document->string
    `(form (method "POST" action "" class "pure-form pure-form-aligned")
           ,(render-form "edit_profile" #'hunchentoot:post-parameter
                         (conformlet ()
-                          `(,@(when *form-errors*
-                                `((div (class "form-errors")
-                                       ,(loop for err in *form-errors*
-                                           collect `(div (style "color: red") ,err)))))
-                              ,(conform (profile-conformlet) :val *profile*))))
+                          `(,(display-form-errors)
+                            ,(conform (profile-conformlet) :val *profile*))))
           (div (class "pure-controls")
                (button (type "submit") "Save Profile")))))
+
+(hunchentoot:define-easy-handler (home-handler :uri "/") ()
+  (html-document->string
+   `("Check out the following examples:"
+     (li ()
+         (ul () (a (href "/profile") "Edit Profile") ": Simple conformlet composition, no interactivity.")
+         (ul () (a (href "/")))))))
 
 (defun start (port)
   (hunchentoot:start (make-instance 'hunchentoot:easy-acceptor :port port)))

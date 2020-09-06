@@ -253,25 +253,32 @@ message to push on failure. textarea, if set, causes a <textarea> to be used ins
          (select-input options (class-attributes *select-classes*) nil multiple)))
 
 (defun confirm-password-field (label-1 label-2
-                               &key (validate (constantly t)) (error "Password validation failed")
-                                 (confirm-error "Passwords did not match"))
+                               &key
+                                 (validate (constantly t))
+                                 (error "Password validation failed")
+                                 (confirm-error "Passwords did not match")
+                                 suppress-error-when-empty)
   (conformlet (:val val)
-    (let (pw1)
+    (let ((pw1 "")
+          (pw2 ""))
 
-      `(,(conform (string-field label-1 :validate validate :error error :type "password")
-                  :val ""
-                  :onsubmit (lambda (new-val)
-                              (setf pw1 new-val)))
-         ,(conform (string-field label-2 :validate (lambda (new-val)
-                                                     ;; don't give confirmation error if pw1 failed.
-                                                     (or (not pw1) (equal pw1 new-val)))
-                                 :error confirm-error
+      (custom-event ()
+                    (let ((ok t))
+                      (unless (or (and (emptyp pw1) suppress-error-when-empty)
+                                  (funcall validate pw1))
+                        (push error *form-errors*)
+                        (setf ok nil))
+                      (unless (equal pw1 pw2)
+                        (push confirm-error *form-errors*)
+                        (setf ok nil))
+                      (when ok
+                        (setf val pw1))))
+
+      `(,(conform (string-field label-1 :type "password")
+                  :val pw1)
+         ,(conform (string-field label-2
                                  :type "password")
-                   :val ""
-                   :onsubmit (lambda (new-val)
-                               (declare (ignore new-val))
-                               (when pw1
-                                 (setf val pw1))))))))
+                   :val pw2)))))
 
 (defgeneric default-conformlet (val)
   (:documentation "Return a default conformlet for the value. See auto-conformlet"))

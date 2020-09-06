@@ -60,9 +60,9 @@ only time the second argument may be a string, so :noescape can still be used to
     (number (write-to-string html))
     (cons
      (cond
-       ;; this essentially flattens the structure, making it really easy to have a function that
-       ;; returns either a list of elements or a single element.
-       ((not (symbolp (car html)))
+       ;; if html is not a valid html element, assume it's a list of html elements and recurse
+       ((or (null (car html))
+            (not (symbolp (car html))))
         (apply #'concatenate 'string (mapcar #'html->string html)))
        ((and (eq :noescape (car html))
              (stringp (cadr html)))
