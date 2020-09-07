@@ -434,7 +434,10 @@
                     collect `(div (class "better-list-item")
                                   ,(conform subconformlet :val item)
                                   ,(conform (button-field "Delete item")
-                                            :onclick (lambda () (metatilities:delete-item-at val i)))))
+                                            :onclick (let ((k i)) ; otherwise, i = (length val) after
+                                                                  ; iteration completes.
+                                                       (lambda ()
+                                                         (metatilities:delete-item-at val k)))))))
 
                 ,(conform (select-field default-options
                                         :val selected-option))

@@ -1,2 +1,3 @@
 (defpackage #:conform/examples
-  (:use #:alexandria #:cl #:conform))
+  (:use #:alexandria #:cl #:conform)
+  (:export #:start))

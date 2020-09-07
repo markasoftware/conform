@@ -6,122 +6,163 @@
 ;;  FRAMEWORK  ;;
 ;;;;;;;;;;;;;;;;;
 
-(defmacro conformlet ((&key
-                       ((:val val-var))
-                       ((:onsubmit onsubmit-var) (gensym "ONSUBMIT") explicit-onsubmit-p)
-                       (order 0)
-                       ((:name-iter name-iter-var) (gensym "NAME-ITER"))
-                       extra-args)
-                      &body body
-                      &aux (val-provided-var (gensym "VAL-PROVIDED-VAR")))
-  ;; children: ((event-fn default-order explicit-order) (event-fn-2 do2 eo2))
-  (declare (symbol val-var onsubmit-var name-iter-var)
-           (list extra-args))
-  (assert (or val-var (not explicit-onsubmit-p)) nil
-          "Cannot specify onsubmit without val! Make up some other evt handler name!")
-  (once-only (order)
-    (with-gensyms (children-var)
-      ;; parenthesis hell?
-      `(lambda (&key
-                  ,@(when val-var
-                      `(((:val ,val-var) nil ,val-provided-var)
-                        ((:onsubmit ,onsubmit-var))))  
-                  ,@extra-args
-                &aux ,children-var)
-
-         ;; check data instance parameters provided when this is a data conformlet
-         ,@(when val-var
-             `((declare (function ,onsubmit-var))
-               (assert ,val-provided-var nil ":val must be provided to value conformlets.")))
-
-         (list
-          (lambda (,name-iter-var)
-            (flet
-                ((conform-raw (order conformlet-instance)
-                   (declare (cons conformlet-instance)
-                            ((or number (member :epilogue)) order))
-                   ;; register the event handler... (cdr formlet) => (event-handler default-order)
-                   (push (append (cdr conformlet-instance) (list order)) ,children-var)
-                   ;; ...and actually render the body
-                   (funcall (car conformlet-instance) ,name-iter-var))
-                 (,name-iter-var ()
-                   (funcall ,name-iter-var)))
-
-              (macrolet
-                  ((conform (conformlet
-                                &rest args
-                                &key val onsubmit (order 0)
-                                &allow-other-keys
-                                &environment env
-                                ;; TODO: figure out conflict between alexandria and metatilities
-                                &aux (extra-args (remove-from-plist args :val :onsubmit :order)))
-                     ;; we do /not/ once-only on extra-args. once-only'ing the whole list (with the
-                     ;; /forms/ for each value) is not useful -- we'd need to once-only each value,
-                     ;; which is more trouble than just being careful not to eval it twice.
-                     (once-only (order conformlet)
-                       (if val
-                           (multiple-value-bind (vars vals stores writer reader)
-                               (get-setf-expansion val env)
-                             ;; TODO: declarations to check type of conformlet
-                             `(let ,(mapcar #'list vars vals) 
-                                (conform-raw
-                                 ,order
-                                 (funcall
-                                  ,conformlet
-                                  :val ,reader
-                                  :onsubmit ,(or onsubmit
-                                                 ;; TODO: double check that v won't conflict with
-                                                 ;; variables in the writer.
-                                                 `(lambda (v)
-                                                    (let ((,(car stores) v))
-                                                      ,writer)))
-                                  ,@extra-args))))
-                           `(conform-raw ,order (funcall ,conformlet ,@extra-args)))))
-
-                   (custom-event ((&key (order :epilogue)
-                                        ((:val-iter val-iter-var) (gensym "VAL-ITER")))
-                                  &body body)
-                     (once-only (order)
-                       `(conform-raw ,order (list (constantly nil) ; no render function
-                                                  (lambda (,val-iter-var)
-                                                    (flet ((,val-iter-var ()
-                                                             (funcall ,val-iter-var)))
-                                                      ,@body)) ; event fn
-                                                  0)))))       ; default order
-
-                ,@(if (and val-var (not explicit-onsubmit-p))
-                      `((prog1
-                            (locally ,@body)
-                          ;; evaluating this last means it is the very last event to fire
-                          (custom-event ()
-                                        (funcall ,onsubmit-var ,val-var))))
-                      body))))
-          (lambda (val-iter)
-            ;; most recent child is first before the sort, we want it to end up last
-            (dolist (child (stable-sort
-                            (nreverse ,children-var)
-                            (lambda (child-a child-b)
-                              ;; child format: (event default-order explicit-order)
-                              (let ((explicit-eql (eql (third child-a)
-                                                       (third child-b)))
-                                    (explicit-numerical (and (numberp (third child-a))
-                                                             (numberp (third child-b)))))
-                                (or
-                                 ;; put epilogues last
-                                 (and (not explicit-eql) (eq :epilogue (third child-b)))
-                                 ;; then sort by explicit order
-                                 (and explicit-numerical (< (third child-a)
-                                                            (third child-b)))
-                                 ;; then sort by default order
-                                 (and explicit-eql (< (second child-a)
-                                                      (second child-b))))))))
-              (funcall (first child) val-iter)))
-          ,order)))))
+;; iterator: list (parts prefix &optional getter)
 
 (defun make-name-iterator (prefix)
-  (let ((i 0))
-    (lambda ()
-      (format nil "~a~a" prefix (incf i)))))
+  (list (list 0) prefix))
+
+(defun make-value-iterator (prefix getter)
+  (list (list 0) prefix getter))
+
+;; changes the iterator in-place
+(defun iterator-next (iterator)
+  (incf (caar iterator))
+  iterator)
+
+;; returns a new iterator, leaving the original untouched, and also not being changed when
+;; iterator-next is called on the original.
+(defun iterator-into (iterator)
+  (cons (cons 0 (copy-list (first iterator))) (cdr iterator)))
+
+(defun iterator-name (iterator)
+  (format nil "~a~{~a~^-~}" (second iterator) (first iterator)))
+
+(defun iterator-value (iterator)
+  (assert (third iterator) nil "Can't get value of a name iterator")
+  (funcall (third iterator) (iterator-name iterator)))
+
+(defmacro conformlet ((&key
+                       ((:val val-var))
+                       (order 0)
+                       post-names
+                       extra-args)
+                      &body body)
+
+  ;; children: ((event-fn default-order explicit-order) (event-fn-2 do2 eo2))
+  (declare (symbol val-var)
+           (list extra-args post-names))
+
+  (with-gensyms (name-iter-var onsubmit-var val-provided-var)
+    (once-only (order)
+      (with-gensyms (children-var)
+        `(lambda (&key
+                    ,@(when val-var
+                        `(((:val ,val-var) nil ,val-provided-var)
+                          ((:onsubmit ,onsubmit-var))))  
+                    ,@extra-args
+                  &aux ,children-var)
+
+           ;; check data instance parameters provided when this is a data conformlet
+           ,@(when val-var
+               `((declare (function ,onsubmit-var))
+                 (assert ,val-provided-var nil ":val must be provided to value conformlets.")))
+
+           ;; TODO: don't put post-names out in the cold like this! The problem is the post-names
+           ;; must be accessible from the custom-events, which are defined lexically inside the
+           ;; render function, but the values are not known until the event handling function, so we
+           ;; define them lexically at the top level so they can be accessed and set from both
+           ;; render and event handling. I'm worried that somehow the render function might end up
+           ;; with a reference to a variable after it is changed by the event handling stage. It
+           ;; might be better to pass the post-name variables as arguments to the custom event
+           ;; functions?
+           (let ,post-names
+             (list
+              (lambda (,name-iter-var)
+                ,@(loop for post-name in post-names
+                     collect `(setf ,post-name (iterator-name (iterator-next ,name-iter-var))))
+                (flet
+                    ((conform-raw (order conformlet-instance)
+                       (declare (cons conformlet-instance)
+                                ((or number (member :epilogue)) order))
+                       ;; register the event handler.
+                       (push (append (cdr conformlet-instance) (list order))
+                             ,children-var)
+                       ;; ...and actually render the body
+                       (funcall (car conformlet-instance) (iterator-into (iterator-next ,name-iter-var)))))
+
+                  (macrolet
+                      ((conform (conformlet
+                                    &rest args
+                                    &key val onsubmit (order 0)
+                                    &allow-other-keys
+                                    &aux (extra-args (remove-from-plist args :val :onsubmit :order))
+                                    &environment env)
+                         ;; we do /not/ once-only on extra-args. once-only'ing the whole list (with
+                         ;; the /forms/ for each value) is not useful -- we'd need to once-only each
+                         ;; value, which is more trouble than just being careful not to eval it
+                         ;; twice.
+                         (once-only (order conformlet)
+                           (if val
+                               (multiple-value-bind (vars vals stores writer reader)
+                                   (get-setf-expansion val env)
+                                 ;; TODO: declarations to check type of conformlet
+                                 `(let ,(mapcar #'list vars vals) 
+                                    (conform-raw
+                                     ,order
+                                     (funcall
+                                      ,conformlet
+                                      :val ,reader
+                                      :onsubmit ,(or onsubmit
+                                                     ;; TODO: double check that v won't conflict
+                                                     ;; with variables in the writer.
+                                                     `(lambda (v)
+                                                        (let ((,(car stores) v))
+                                                          ,writer)))
+                                      ,@extra-args))))
+                               `(conform-raw ,order (funcall ,conformlet ,@extra-args)))))
+
+                       (custom-event ((&key (order :epilogue))
+                                      &body body)
+                         (once-only (order)
+                           (with-gensyms (val-iter-var)
+                             `(conform-raw
+                               ,order
+                               (list (constantly nil) ; no render function
+                                     (lambda (,val-iter-var)
+                                       (declare (ignore ,val-iter-var))
+                                       ,@body) ; event fn
+                                     0))))))   ; default order
+
+                    ,@(if val-var
+                          `((multiple-value-prog1
+                                (locally ,@body)
+                              ;; evaluating this last means it is the very last event to fire
+                              (custom-event ()
+                                            (funcall ,onsubmit-var ,val-var))))
+                          body))))
+
+              (lambda (val-iter
+                       &aux (children (nreverse ,children-var)))
+                ,@(loop for post-name in post-names
+                     collect `(setf ,post-name (iterator-value (iterator-next val-iter))))
+
+                ;; value iterators must be bound to each event handler in the order
+                ;; the event handlers were registered (not necessarily the order
+                ;; they will be executed), so that they are called in the same order
+                ;; the name iterators were called.
+                (dolist (child children)
+                  (rplaca child (curry (first child) (iterator-into (iterator-next val-iter)))))
+
+                ;; most recent child is first before the sort, we want it to end up last
+                (dolist (child (stable-sort
+                                children
+                                (lambda (child-a child-b)
+                                  ;; child format: (event default-order explicit-order)
+                                  (let ((explicit-eql (eql (third child-a)
+                                                           (third child-b)))
+                                        (explicit-numerical (and (numberp (third child-a))
+                                                                 (numberp (third child-b)))))
+                                    (or
+                                     ;; put epilogues last
+                                     (and (not explicit-eql) (eq :epilogue (third child-b)))
+                                     ;; then sort by explicit order
+                                     (and explicit-numerical (< (third child-a)
+                                                                (third child-b)))
+                                     ;; then sort by default order
+                                     (and explicit-eql (< (second child-a)
+                                                          (second child-b))))))))
+                  (funcall (first child))))
+              ,order)))))))
 
 (defvar *form-errors* nil
   "A list of validation errors (strings) collected while processing the form submission.")
@@ -139,7 +180,7 @@ from fields of other forms in the same HTML page."
            (funcall (conformlet () (conform ,conformlet ,@instance-args)))
          (declare (ignore order))
          (funcall render (make-name-iterator ,prefix))
-         (funcall handle-events (compose ,post-getter (make-name-iterator ,prefix)))
+         (funcall handle-events (make-value-iterator ,prefix ,post-getter))
          (funcall render (make-name-iterator ,prefix))))))
 
 ;;;;;;;;;;;;;;
@@ -162,53 +203,52 @@ from fields of other forms in the same HTML page."
 ;;; -input conformlets return a cons: First, the inner HTML, and second, the name attribute used, so
 ;;; that a parent can use it in, say, a <label>. Multiple values wouldn't work because (conform) is a lexical /macro/, not function, so even though it expands into a function call, it
 
-(defun string-input (html-attrs &optional (html-tag 'input))
-  (conformlet (:val val :onsubmit onsubmit :name-iter name-iter)
-              
-    (custom-event (:val-iter val-iter)
-                  ;; do not call onsubmit when, for example, the form is being loaded with GET
-                  (when-let ((new-val (val-iter)))
-                    (funcall onsubmit new-val)))
+(defun string-input (&optional html-attrs (html-tag 'input))
+  (conformlet (:val val :post-names (name))
 
-    (let ((name (funcall name-iter)))
-      (values
-       `(,html-tag (name ,name ,@(when (stringp val)
-                                   `(value ,val)) ,@html-attrs))
-       name))))
+    (custom-event ()
+                  ;; do not update val when val-iter returns nil
+                  (when name
+                    (setf val name)))
 
-(defun select-input (options select-attrs option-attrs &optional multiple)
-  (conformlet (:val val :onsubmit onsubmit :name-iter name-iter)
+    (values
+     `(,html-tag (name ,name ,@(when (stringp val)
+                                 `(value ,val)) ,@html-attrs))
+     name)))
 
-    (custom-event (:val-iter val-iter)
+(defun select-input (options &optional select-attrs option-attrs multiple)
+  (conformlet (:val val :post-names (name))
+
+    (custom-event ()
                   ;; TODO: error handling for parse integer?
-                  (when-let ((new-val (val-iter)))
-                    (funcall onsubmit
-                             (flet ((str->option (str)
-                                      (car (nth (parse-integer str) options))))
-                               (if multiple
-                                   (mapcar #'str->option (val-iter))
-                                   (str->option (val-iter)))))))
+                  (when name
+                    (setf val
+                          (flet ((str->option (str)
+                                   (car (nth (parse-integer str) options))))
+                            (if multiple
+                                (mapcar #'str->option name)
+                                (str->option name))))))
 
-    (let ((name (funcall name-iter)))
-      (values
-       `(select (name ,name ,@(when multiple `(multiple t)) ,@select-attrs)
-                ,(loop for (option-val option-text) in options
-                    for i from 0
-                    for selected = (member option-val (if multiple val (list val)))
-                    collect `(option (value ,i label ,option-text
-                                            ,@(when selected
-                                                `(selected t))
-                                            ,@option-attrs))))
-       name))))
+    (values
+     `(select (name ,name ,@(when multiple `(multiple t)) ,@select-attrs)
+              ,(loop for (option-val option-text) in options
+                  for i from 0
+                  for selected = (member option-val (if multiple val (list val)))
+                  collect `(option (value ,i
+                                          ,@(when selected
+                                              `(selected t))
+                                          ,@option-attrs)
+                                   ,option-text)))
+     name)))
 
-(defun button (text html-attrs)
-  (conformlet (:name-iter name-iter :extra-args (onclick))
+(defun button (text &rest html-attrs)
+  (conformlet (:extra-args (onclick) :order 1 :post-names (name))
 
-    (custom-event (:val-iter val-iter)
-                  (when (funcall val-iter)
+    (custom-event ()
+                  (when name
                     (funcall onclick)))
 
-    `(button (name ,(funcall name-iter) type "submit" ,@html-attrs)
+    `(button (name ,name type "submit" ,@html-attrs)
              ,text)))
 
 ;;; -field conformlets are higher-level than -input ones.
@@ -225,14 +265,13 @@ from fields of other forms in the same HTML page."
            (function input-conformlet
                      validate)
            (string error))
-  ;; onsubmit called only when validation passes
-  (conformlet (:val val :onsubmit onsubmit)
+  (conformlet (:val val)
     (multiple-value-bind (input-html name)
         (conform input-conformlet
                  :val val
                  :onsubmit (lambda (new-val)
                              (if (funcall validate new-val)
-                                 (funcall onsubmit new-val)
+                                 (setf val new-val)
                                  (push error *form-errors*))))
       (make-field label name input-html))))
 
