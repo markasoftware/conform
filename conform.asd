@@ -19,6 +19,6 @@
   :depends-on (#:conform #:alexandria #:hunchentoot)
   :pathname "examples"
   :components ((:file "simple-conformlets")
+               (:file "html")
                (:file "interactive-conformlets")
-
-               (:file "")))
+               (:file "server")))

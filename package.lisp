@@ -8,6 +8,7 @@
 
            #:string-input
            #:select-input
+           #:button
            #:string-field
            #:select-field
            #:confirm-password-field
