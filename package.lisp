@@ -2,19 +2,23 @@
 
 (defpackage #:conform
   (:use #:cl #:alexandria)
-  (:export #:conformlet
-           #:conform
-           #:render-form
+  (:export
 
-           #:string-input
-           #:select-input
-           #:button
-           #:string-field
-           #:select-field
-           #:confirm-password-field
+   #:place
+   #:with-places
 
-           #:*form-errors*
-           #:*field-classes*
-           #:*string-classes*
-           #:*select-classes*
-           ))
+   #:conformlet
+   #:render-conformlet
+
+   #:string-input
+   #:select-input
+   #:button
+   #:string-field
+   #:select-field
+   #:confirm-password-field
+
+   #:*form-errors*
+   #:*field-classes*
+   #:*string-classes*
+   #:*select-classes*
+   ))

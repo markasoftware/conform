@@ -2,186 +2,164 @@
 
 (in-package #:conform)
 
-;;;;;;;;;;;;;;;;;
-;;  FRAMEWORK  ;;
-;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;
+;;  PLACE UTILITIES  ;;
+;;;;;;;;;;;;;;;;;;;;;;;
 
-;; iterator: list (parts prefix &optional getter)
+;; Example: (defun my-incf (sth)
+;;            (with-places sth
+;;              (setf sth (1+ sth))))
+;;
+;;          (my-incf (place (cdadr *foo*)))
+
+(defmacro place (place &environment env)
+  "Given a place, expands into a form that evaluates to a cons whose car is a function that reads
+from place and whose cdr is a function that writes to place."
+  (multiple-value-bind (vars vals stores writer reader)
+      (get-setf-expansion place env)
+    `(let ,(mapcar #'list vars vals)
+       (cons (lambda () ,reader)
+             (lambda (new)
+               (let ((,(car stores) new))
+                 ,writer))))))
+
+(defmacro with-places (var-or-vars &body body)
+  "Given any number of variables that are currently bound to outputs of the (place) macro, evaluate
+body with those variables bound to the value at that place, and, after executing body, save the
+value of those variables back to the original place."
+  (let ((vars-gensyms (loop for var in (ensure-list var-or-vars)
+                         do (assert (symbolp var) (var) "Vars passed to with-places not symbols!")
+                         collect (cons var (gensym (symbol-name var))))))
+    `(let ,(loop for (var . gs) in vars-gensyms
+              collect `(,gs ,var))
+       (symbol-macrolet ,(loop for (var . gs) in vars-gensyms
+                            collect `(,var (place-dereference ,gs)))
+         ,@body))))
+
+(defun place-dereference (sth)
+  (funcall (car sth)))
+
+(defsetf place-dereference (sth) (store)
+  `(funcall (cdr ,sth) ,store))
+
+;;;;;;;;;;;;;;;;;;;;;;
+;;  CORE FRAMEWORK  ;;
+;;;;;;;;;;;;;;;;;;;;;;
+
+;; *event-handlers* is a list of cons cells:
+;;
+;; + An event handler function, which takes a Value Iterator as an argument, gets all the values it
+;; needs, then returns another function, which performs any side effects of the event handler. By
+;; having two functions we can call the value iterators in one order, but effect the side effects in
+;; a different order. The value iterators must be called in the same order as the name iterators
+;; during the render phase, hence this requirement. The event handler will not be called until the
+;; render function has been called, so the render function may register event handlers.
+;;
+;; + A number, a relative order in which event handler side effects will be effected.
+(defvar *event-handlers*)
+(defvar *name-iterator*)
+(defvar *value-iterator*)
+(defvar *form-errors*)
+
+(defun assert-conformlet-context (fun-name)
+  (assert (boundp '*event-handlers*) nil "~A called outside of render-conformlet!" fun-name)
+  (assert (boundp '*name-iterator*) nil "~A called during the event-handling phase!" fun-name))
+
+(defmacro conformlet ((&key (order 0) places names) &body body
+                      &aux (names (ensure-list names))
+                        (new-event-var (gensym "NEW-EVENT-VAR")))
+  "Expand into a form that evaluates body in the dynamic context of a new conformlet. The -let
+naming scheme has nothing to do with other -let functions; it is merely a modification of the name
+``formlet''. And unlike -let functions, conformlet establishes a dynamic, not lexical, context.
+
+Conformlet must be called from the dynamic context of another conformlet or of render-conformlet.
+
+``Order'' indicates is a number indicating the relative order that the event handlers defined in and
+under this conformlet will be evaluated compared to sibling conformlets (direct children of the same
+parent conformlet parent as the one being defined).
+
+The ``Places'', if provided, are bound using ``with-places''. This is a convenience, since places
+are frequency used with conformlets. Providing places is equivalent to manually wrapping the
+conformlet call inside with-places.
+
+All ``Names'', if provided, are, during rendering, bound to strings that are suitable for use as the
+``name'' attributes on HTML input elements, and, during event handling, are bound to the
+corresponding POST values, as returned by the post-getter argument to render-conformlet."
+  (once-only (order)
+    `(with-places ,places
+       (assert-conformlet-context "(conformlet)")
+       (let (,new-event-var)
+         (multiple-value-prog1
+             (let (*event-handlers*
+                   ,@(loop for name in names
+                        collect `(,name (funcall *name-iterator*))))
+               (multiple-value-prog1
+                   (locally ,@body)
+                 ;; capture the dynamic value
+                 (let ((event-handlers *event-handlers*))
+                   (setf ,new-event-var
+                         (cons
+                          (lambda ()
+                            ;; First, all the names we need
+                            ,@(loop for name in names
+                                 collect `(setf ,name (funcall *value-iterator*)))
+                            ;; Second, the names our descendants need, in the order of instantiation.
+                            (let ((instantiated-event-handlers
+                                   (loop for event-handler in (nreverse event-handlers)
+                                      collect (cons (funcall (car event-handler))
+                                                    (cdr event-handler)))))
+                              (lambda (&aux (sorted-instantiated-event-handlers
+                                             (stable-sort
+                                              instantiated-event-handlers
+                                              (lambda (a b)
+                                                (declare ((or number (eql :epilogue)) a b))
+                                                (cond
+                                                  ((eql a b) nil)
+                                                  ((eql :epilogue b) t)
+                                                  (t (< a b))))
+                                              :key #'cdr)))
+                                (format t "Inside!")
+                                ;; Finally, call the event handler bodies in the order specified.
+                                (loop for event-handler in sorted-instantiated-event-handlers
+                                   do (funcall (car event-handler))))))
+                          ,order)))))
+           (push ,new-event-var *event-handlers*))))))
+
+(defmacro custom-event (&body body)
+  "Expand into a form that registers a custom event handler consisting of the forms in body. This
+event handler will be called after all non-custom event handlers in the parent conformlet."
+  `(progn
+     (assert-conformlet-context "(custom-event)")
+     (push (cons (lambda () (lambda () ,@body)) :epilogue)
+           *event-handlers*)))
+
+(defmacro render-form (prefix post-getter &body body)
+  "Sets up a dynamic environment in which (conformlet) calls are allowed, and return the HTML of the
+rendered form. ``prefix'' is prepended to the names of input elements to allow multiple forms to
+coexist on the same page. ``post-getter'' is a function that, given a post name, returns the
+corresponding value."
+  (once-only (prefix post-getter)
+    `(let (*event-handlers*
+           *form-errors*)
+
+       ;; First render stage
+       (let ((*name-iterator* (make-name-iterator ,prefix)))
+         (conformlet () ,@body))
+
+       ;; Event handling stage
+       (let ((*value-iterator* (compose ,post-getter (make-name-iterator ,prefix))))
+         ;; conformlet pushes exactly one event handler. Let's call it!
+         (funcall (funcall (caar *event-handlers*))))
+
+       ;; Second render stage. Event handlers have already been called, so we don't even bother
+       ;; rebinding *event-handlers*!
+       (let ((*name-iterator* (make-name-iterator ,prefix)))
+         (conformlet () ,@body)))))
 
 (defun make-name-iterator (prefix)
-  (list (list 0) prefix))
-
-(defun make-value-iterator (prefix getter)
-  (list (list 0) prefix getter))
-
-;; changes the iterator in-place
-(defun iterator-next (iterator)
-  (incf (caar iterator))
-  iterator)
-
-;; returns a new iterator, leaving the original untouched, and also not being changed when
-;; iterator-next is called on the original.
-(defun iterator-into (iterator)
-  (cons (cons 0 (copy-list (first iterator))) (cdr iterator)))
-
-(defun iterator-name (iterator)
-  (format nil "~a~{~a~^-~}" (second iterator) (first iterator)))
-
-(defun iterator-value (iterator)
-  (assert (third iterator) nil "Can't get value of a name iterator")
-  (funcall (third iterator) (iterator-name iterator)))
-
-(defmacro conformlet ((&key
-                       ((:val val-var))
-                       (order 0)
-                       post-names
-                       extra-args)
-                      &body body)
-
-  ;; children: ((event-fn default-order explicit-order) (event-fn-2 do2 eo2))
-  (declare (symbol val-var)
-           (list extra-args post-names))
-
-  (with-gensyms (name-iter-var onsubmit-var val-provided-var)
-    (once-only (order)
-      (with-gensyms (children-var)
-        `(lambda (&key
-                    ,@(when val-var
-                        `(((:val ,val-var) nil ,val-provided-var)
-                          ((:onsubmit ,onsubmit-var))))  
-                    ,@extra-args
-                  &aux ,children-var)
-
-           ;; check data instance parameters provided when this is a data conformlet
-           ,@(when val-var
-               `((declare (function ,onsubmit-var))
-                 (assert ,val-provided-var nil ":val must be provided to value conformlets.")))
-
-           ;; TODO: don't put post-names out in the cold like this! The problem is the post-names
-           ;; must be accessible from the custom-events, which are defined lexically inside the
-           ;; render function, but the values are not known until the event handling function, so we
-           ;; define them lexically at the top level so they can be accessed and set from both
-           ;; render and event handling. I'm worried that somehow the render function might end up
-           ;; with a reference to a variable after it is changed by the event handling stage. It
-           ;; might be better to pass the post-name variables as arguments to the custom event
-           ;; functions?
-           (let ,post-names
-             (list
-              (lambda (,name-iter-var)
-                ,@(loop for post-name in post-names
-                     collect `(setf ,post-name (iterator-name (iterator-next ,name-iter-var))))
-                (flet
-                    ((conform-raw (order conformlet-instance)
-                       (declare (cons conformlet-instance)
-                                ((or number (member :epilogue)) order))
-                       ;; register the event handler.
-                       (push (append (cdr conformlet-instance) (list order))
-                             ,children-var)
-                       ;; ...and actually render the body
-                       (funcall (car conformlet-instance) (iterator-into (iterator-next ,name-iter-var)))))
-
-                  (macrolet
-                      ((conform (conformlet
-                                    &rest args
-                                    &key val onsubmit (order 0)
-                                    &allow-other-keys
-                                    &aux (extra-args (remove-from-plist args :val :onsubmit :order))
-                                    &environment env)
-                         ;; we do /not/ once-only on extra-args. once-only'ing the whole list (with
-                         ;; the /forms/ for each value) is not useful -- we'd need to once-only each
-                         ;; value, which is more trouble than just being careful not to eval it
-                         ;; twice.
-                         (once-only (order conformlet)
-                           (if val
-                               (multiple-value-bind (vars vals stores writer reader)
-                                   (get-setf-expansion val env)
-                                 ;; TODO: declarations to check type of conformlet
-                                 `(let ,(mapcar #'list vars vals) 
-                                    (conform-raw
-                                     ,order
-                                     (funcall
-                                      ,conformlet
-                                      :val ,reader
-                                      :onsubmit ,(or onsubmit
-                                                     ;; TODO: double check that v won't conflict
-                                                     ;; with variables in the writer.
-                                                     `(lambda (v)
-                                                        (let ((,(car stores) v))
-                                                          ,writer)))
-                                      ,@extra-args))))
-                               `(conform-raw ,order (funcall ,conformlet ,@extra-args)))))
-
-                       (custom-event ((&key (order :epilogue))
-                                      &body body)
-                         (once-only (order)
-                           (with-gensyms (val-iter-var)
-                             `(conform-raw
-                               ,order
-                               (list (constantly nil) ; no render function
-                                     (lambda (,val-iter-var)
-                                       (declare (ignore ,val-iter-var))
-                                       ,@body) ; event fn
-                                     0))))))   ; default order
-
-                    ,@(if val-var
-                          `((multiple-value-prog1
-                                (locally ,@body)
-                              ;; evaluating this last means it is the very last event to fire
-                              (custom-event ()
-                                            (funcall ,onsubmit-var ,val-var))))
-                          body))))
-
-              (lambda (val-iter
-                       &aux (children (nreverse ,children-var)))
-                ,@(loop for post-name in post-names
-                     collect `(setf ,post-name (iterator-value (iterator-next val-iter))))
-
-                ;; value iterators must be bound to each event handler in the order
-                ;; the event handlers were registered (not necessarily the order
-                ;; they will be executed), so that they are called in the same order
-                ;; the name iterators were called.
-                (dolist (child children)
-                  (rplaca child (curry (first child) (iterator-into (iterator-next val-iter)))))
-
-                ;; most recent child is first before the sort, we want it to end up last
-                (dolist (child (stable-sort
-                                children
-                                (lambda (child-a child-b)
-                                  ;; child format: (event default-order explicit-order)
-                                  (let ((explicit-eql (eql (third child-a)
-                                                           (third child-b)))
-                                        (explicit-numerical (and (numberp (third child-a))
-                                                                 (numberp (third child-b)))))
-                                    (or
-                                     ;; put epilogues last
-                                     (and (not explicit-eql) (eq :epilogue (third child-b)))
-                                     ;; then sort by explicit order
-                                     (and explicit-numerical (< (third child-a)
-                                                                (third child-b)))
-                                     ;; then sort by default order
-                                     (and explicit-eql (< (second child-a)
-                                                          (second child-b))))))))
-                  (funcall (first child))))
-              ,order)))))))
-
-(defvar *form-errors* nil
-  "A list of validation errors (strings) collected while processing the form submission.")
-
-;; TODO: custom name for the form
-(defmacro render-form (prefix post-getter conformlet &rest instance-args)
-  "post-getter is a function that, given a string, gets the corresponding POST value (eg,
-#'hunchentoot:post-parameter). name-prefix, if provided, is used to distinguish fields of this form
-from fields of other forms in the same HTML page."
-  (once-only (prefix post-getter conformlet)
-    `(let ((*form-errors* nil))
-       ;; render and handle-events are bound after evaluating the instance args, so there's no
-       ;; chance of clobbering variables.
-       (destructuring-bind (render handle-events order)
-           (funcall (conformlet () (conform ,conformlet ,@instance-args)))
-         (declare (ignore order))
-         (funcall render (make-name-iterator ,prefix))
-         (funcall handle-events (make-value-iterator ,prefix ,post-getter))
-         (funcall render (make-name-iterator ,prefix))))))
+  (let ((i 0))
+    (lambda ()
+      (format nil "~a~a" prefix (incf i)))))
 
 ;;;;;;;;;;;;;;
 ;;  FIELDS  ;;
@@ -203,31 +181,31 @@ from fields of other forms in the same HTML page."
 ;;; -input conformlets return a cons: First, the inner HTML, and second, the name attribute used, so
 ;;; that a parent can use it in, say, a <label>. Multiple values wouldn't work because (conform) is a lexical /macro/, not function, so even though it expands into a function call, it
 
-(defun string-input (&optional html-attrs (html-tag 'input))
-  (conformlet (:val val :post-names (name))
+(defun string-input (val &optional html-attrs (html-tag 'input))
+  (conformlet (:places val :names name)
 
-    (custom-event ()
-                  ;; do not update val when val-iter returns nil
-                  (when name
-                    (setf val name)))
+    (custom-event
+      ;; do not update val when val-iter returns nil
+      (when name
+        (setf val name)))
 
     (values
      `(,html-tag (name ,name ,@(when (stringp val)
                                  `(value ,val)) ,@html-attrs))
      name)))
 
-(defun select-input (options &optional select-attrs option-attrs multiple)
-  (conformlet (:val val :post-names (name))
+(defun select-input (val options &optional select-attrs option-attrs multiple)
+  (conformlet (:places val :names name)
 
-    (custom-event ()
-                  ;; TODO: error handling for parse integer?
-                  (when name
-                    (setf val
-                          (flet ((str->option (str)
-                                   (car (nth (parse-integer str) options))))
-                            (if multiple
-                                (mapcar #'str->option name)
-                                (str->option name))))))
+    (custom-event
+      ;; TODO: error handling for parse integer?
+      (when name
+        (setf val
+              (flet ((str->option (str)
+                       (car (nth (parse-integer str) options))))
+                (if multiple
+                    (mapcar #'str->option name)
+                    (str->option name))))))
 
     (values
      `(select (name ,name ,@(when multiple `(multiple t)) ,@select-attrs)
@@ -241,12 +219,12 @@ from fields of other forms in the same HTML page."
                                    ,option-text)))
      name)))
 
-(defun button (text &rest html-attrs)
-  (conformlet (:extra-args (onclick) :order 1 :post-names (name))
+(defun button (onclick text &rest html-attrs)
+  (conformlet (:order 1 :names name)
 
-    (custom-event ()
-                  (when name
-                    (funcall onclick)))
+    (custom-event
+      (when name
+        (funcall onclick)))
 
     `(button (name ,name type "submit" ,@html-attrs)
              ,text)))
@@ -259,23 +237,23 @@ from fields of other forms in the same HTML page."
         (label (for ,name) ,label)
         ,inner-html))
 
-(defun field (label validate error input-conformlet)
+(defun field (val label validate error input-conformlet)
   "Wraps an -input value conformlet with the given label."
   (declare (string label)
            (function input-conformlet
                      validate)
            (string error))
-  (conformlet (:val val)
+  (conformlet (:places val)
     (multiple-value-bind (input-html name)
-        (conform input-conformlet
-                 :val val
-                 :onsubmit (lambda (new-val)
-                             (if (funcall validate new-val)
-                                 (setf val new-val)
-                                 (push error *form-errors*))))
+        (funcall input-conformlet
+                 (cons (lambda () val)
+                       (lambda (new-val)
+                         (if (funcall validate new-val)
+                             (setf val new-val)
+                             (push error *form-errors*)))))
       (make-field label name input-html))))
 
-(defun string-field (label
+(defun string-field (val label
                      &rest html-attrs
                      &key textarea
                        (validate (constantly t)) (error "String validation error")
@@ -283,47 +261,45 @@ from fields of other forms in the same HTML page."
   "A string field, with the given label. validate checks the field's validity and error is the
 message to push on failure. textarea, if set, causes a <textarea> to be used instead of <input>."
   (delete-from-plistf html-attrs :validate :error :textarea)
-  (field label validate error (string-input html-attrs (if textarea 'textarea 'input))))
+  (field val label validate error (rcurry #'string-input html-attrs (if textarea 'textarea 'input))))
 
-(defun select-field (label options
+(defun select-field (val label options
                      &key (validate (constantly t)) (error "Select validation error") multiple)
   ;; TODO: docs
-  (field validate error label
+  (field val validate error label
          (select-input options (class-attributes *select-classes*) nil multiple)))
 
-(defun confirm-password-field (label-1 label-2
+(defun confirm-password-field (val label-1 label-2
                                &key
                                  (validate (constantly t))
                                  (error "Password validation failed")
                                  (confirm-error "Passwords did not match")
                                  suppress-error-when-empty)
-  (conformlet (:val val)
+  (conformlet (:places val)
     (let ((pw1 "")
           (pw2 ""))
 
-      (custom-event ()
-                    (let ((ok t))
-                      (unless (or (and (emptyp pw1) suppress-error-when-empty)
-                                  (funcall validate pw1))
-                        (push error *form-errors*)
-                        (setf ok nil))
-                      (unless (equal pw1 pw2)
-                        (push confirm-error *form-errors*)
-                        (setf ok nil))
-                      (when ok
-                        (setf val pw1))))
+      (custom-event
+        (let ((ok t))
+          (unless (or (and (emptyp pw1) suppress-error-when-empty)
+                      (funcall validate pw1))
+            (push error *form-errors*)
+            (setf ok nil))
+          (unless (equal pw1 pw2)
+            (push confirm-error *form-errors*)
+            (setf ok nil))
+          (when ok
+            (setf val pw1))))
 
-      `(,(conform (string-field label-1 :type "password")
-                  :val pw1)
-         ,(conform (string-field label-2
-                                 :type "password")
-                   :val pw2)))))
+      `(,(string-field (place pw1) label-1 :type "password")
+         ,(string-field (place pw2) label-2 :type "password")))))
 
-(defgeneric default-conformlet (val)
-  (:documentation "Return a default conformlet for the value. See auto-conformlet"))
+(defgeneric default-conformlet (val val-place)
+  (:documentation "Instantiate a conformlet for the given value. The value is passed as the first
+argument, then the place where that value is stored as the next argument, then other arguments
+later."))
 
-(defun auto-conformlet ()
-  (conformlet (:val val)
-    (conform (default-conformlet val)
-             :val val)))
+(defun auto-conformlet (val)
+  "Given a place (using the (place) macro), call the appropriate conformlet."
+  (default-conformlet (funcall (car val)) val))
 

@@ -15,74 +15,73 @@
     (rplaca cons1 (car cons2))
     (rplaca cons2 temp)))
 
-(defun advanced-list (subconformlet make-default)
+(defun advanced-list (val subconformlet make-default)
   (declare (function subconformlet make-default))
-  (conformlet (:val val)
+  (conformlet (:places val)
     `(div (class "form-list")
           ,(loop for i from 0 below (length val)
-              collect (let ((k i)) ; capture the value permanently for closures
+              collect (let ((k i))      ; capture the value permanently for closures
 
                         `(div (style "border-bottom: 2px solid gray; padding: 1rem 0;")
 
-                              ,(conform subconformlet :val (nth k val))
+                              ,(funcall subconformlet (place (nth k val)))
 
                               (div (class "pure-controls")
-                                   ,(conform (button "Delete")
-                                             :onclick (lambda ()
-                                                        (delete-item-at val k)))
+                                   ,(button (lambda () (delete-item-at val k)) "Delete")
                                    ,(when (> k 0)
-                                      (conform (button "Move up")
-                                               :onclick (lambda ()
-                                                          (swapcar (nthcdr (1- k) val)
-                                                                   (nthcdr k val)))))
+                                      (button (lambda ()
+                                                (swapcar (nthcdr (1- k) val)
+                                                         (nthcdr k val)))
+                                              "Move up"))
                                    ,(when (< k (1- (length val)))
-                                      (conform (button "Move down")
-                                               :onclick (lambda ()
-                                                          (swapcar (nthcdr k val)
-                                                                   (nthcdr (1+ k) val)))))))))
+                                      (button (lambda ()
+                                                (swapcar (nthcdr k val)
+                                                         (nthcdr (1+ k) val)))
+                                              "Move down"))))))
           (div (class "pure-controls")
-               ,(conform (button "Add new")
-                         :onclick (lambda ()
-                                    (appendf val (list (funcall make-default)))))
-               ,(conform (button "Shuffle")
-                         :onclick (lambda ()
-                                    (setf val (shuffle val))))
-               ,(conform (button "Thanos")
-                         :onclick (lambda ()
-                                    (setf val (nthcdr (ceiling (length val) 2) (shuffle val)))))))))
+               ,(button (lambda ()
+                          (appendf val (list (funcall make-default))))
+                        "Add new")
+               ,(button (lambda ()
+                          (setf val (shuffle val)))
+                        "Shuffle")
+               ,(button (lambda ()
+                          (setf val (nthcdr (ceiling (length val) 2) (shuffle val))))
+                        "Thanos")))))
 
-(defun cons-tree ()
+(defun cons-tree (val)
   "Conformlet for a cons tree of strings or integers."
-  (let* ((cell-type-selector
-          (conformlet (:extra-args (onclick) :order 1)
-            (let (new-val)
-              `(
-                ;; because we call select-input anew for each cell-type-selector conformlet
-                ;; instantiated, there's no chance of the same cons cell being re-used in multiple
-                ;; places causing unexpected linkages
-                ,(conform (select-input `((nil "NIL")
-                                          ("" "String")
-                                          (,(cons nil nil) "Cons")))
-                          :val new-val)
-                (br)
-                ,(conform (button "Change")
-                          :onclick (lambda ()
-                                     (funcall onclick new-val)))))))
-         (cons-cell
-          (conformlet (:val val)
-            `((td ()
-                  ,(conform cell-type-selector
-                            :onclick (lambda (new-val)
-                                       (setf val new-val))))
-              (td ()
-                  ,(etypecase val
-                     (cons (conform (cons-tree) :val val))
-                     (string (conform (string-input) :val val))
-                     (null "NIL")))))))
+  (labels ((cell-type-selector (onclick)
+             (conformlet (:order 1)
+               (let (new-val)
+                 `(
+                   ;; because we call select-input anew for each cell-type-selector conformlet
+                   ;; instantiated, there's no chance of the same cons cell being re-used in multiple
+                   ;; places causing unexpected linkages
+                   ,(select-input (place new-val)
+                                  `((nil "NIL")
+                                    ("" "String")
+                                    (,(cons nil nil) "Cons")))
+                   (br)
+                   ,(button
+                     (lambda ()
+                       (funcall onclick new-val))
+                     "Change")))))
+           (cons-cell (val)
+             (conformlet (:places val)
+               `((td ()
+                     ,(cell-type-selector
+                       (lambda (new-val)
+                         (setf val new-val))))
+                 (td ()
+                     ,(etypecase val
+                        (cons (cons-tree (place val)))
+                        (string (string-input (place val)))
+                        (null "NIL")))))))
 
-    (conformlet (:val val)
+    (conformlet (:places val)
       `(table (class "cons-tree" style "border: 2px solid gray; margin-left: 1rem;")
               (tr ()
-                  (td ()  "CAR: ") (td () ,(conform cons-cell :val (car val))))
+                  (td ()  "CAR: ") ,(cons-cell (place (car val))))
               (tr ()
-                  (td () "CDR: ") (td () ,(conform cons-cell :val (cdr val))))))))
+                  (td () "CDR: ") ,(cons-cell (place (cdr val))))))))
