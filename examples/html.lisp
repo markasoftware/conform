@@ -1,3 +1,6 @@
+;;;; Copyright 2020 Mark Polyakov
+;;;; Released under the MIT license
+
 (in-package #:conform/examples)
 
 (defvar *html-void-tags* '(:area :base :br :col :embed :hr :img :input :link

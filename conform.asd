@@ -1,4 +1,5 @@
-;;;; conform.asd
+;;;; Copyright 2020 Mark Polyakov
+;;;; Released under the MIT license
 
 (asdf:defsystem #:conform
   :description "Interactive, composable, server-rendered HTML forms."

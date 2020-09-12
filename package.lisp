@@ -1,4 +1,5 @@
-;;;; package.lisp
+;;;; Copyright 2020 Mark Polyakov
+;;;; Released under the MIT license
 
 (defpackage #:conform
   (:use #:cl #:alexandria)
