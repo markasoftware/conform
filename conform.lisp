@@ -118,7 +118,6 @@ corresponding POST values, as returned by the post-getter argument to render-con
                                                   ((eql :epilogue b) t)
                                                   (t (< a b))))
                                               :key #'cdr)))
-                                (format t "Inside!")
                                 ;; Finally, call the event handler bodies in the order specified.
                                 (loop for event-handler in sorted-instantiated-event-handlers
                                    do (funcall (car event-handler))))))
@@ -133,23 +132,24 @@ event handler will be called after all non-custom event handlers in the parent c
      (push (cons (lambda () (lambda () ,@body)) :epilogue)
            *event-handlers*)))
 
-(defmacro render-form (prefix post-getter &body body)
+(defmacro render-form (prefix value-getter submission-p &body body)
   "Sets up a dynamic environment in which (conformlet) calls are allowed, and return the HTML of the
 rendered form. ``prefix'' is prepended to the names of input elements to allow multiple forms to
-coexist on the same page. ``post-getter'' is a function that, given a post name, returns the
-corresponding value."
-  (once-only (prefix post-getter)
+coexist on the same page. ``value-getter'' is a function that, given an <input> name, returns the
+corresponding value. ``submission-p'' should be non-nil when the form has been submitted. When nil,
+events will not be processed."
+  (once-only (prefix value-getter submission-p)
     `(let (*event-handlers*
            *form-errors*)
+       (when ,submission-p
+         ;; First render stage
+         (let ((*name-iterator* (make-name-iterator ,prefix)))
+           (conformlet () ,@body))
 
-       ;; First render stage
-       (let ((*name-iterator* (make-name-iterator ,prefix)))
-         (conformlet () ,@body))
-
-       ;; Event handling stage
-       (let ((*value-iterator* (compose ,post-getter (make-name-iterator ,prefix))))
-         ;; conformlet pushes exactly one event handler. Let's call it!
-         (funcall (funcall (caar *event-handlers*))))
+         ;; Event handling stage
+         (let ((*value-iterator* (compose ,value-getter (make-name-iterator ,prefix))))
+           ;; conformlet pushes exactly one event handler. Let's call it!
+           (funcall (funcall (caar *event-handlers*)))))
 
        ;; Second render stage. Event handlers have already been called, so we don't even bother
        ;; rebinding *event-handlers*!
@@ -166,14 +166,20 @@ corresponding value."
 ;;;;;;;;;;;;;;
 
 (defvar *field-classes* nil
-  "List of HTML/CSS classes to put on all fields (the outer <div> that surrounds both the <label>
-  and the input")
+  "List of CSS classes to put on all fields (the outer <div> that surrounds both the <label> and the
+input")
 
 (defvar *string-classes* nil
-  "List of HTML/CSS classes to put on the <input> or <textarea> of string-field instances")
+  "List of CSS classes to put on the <input> or <textarea> of string-field instances")
 
 (defvar *select-classes* nil
-  "List of HTML/CSS classes to put on the <select> of select-field instances")
+  "List of CSS classes to put on the <select> of select-field instances")
+
+(defvar *radio-container-classes* nil
+  "List of CSS classes to put on the <div> surrounding a group of radio labels & inputs")
+
+(defvar *radio-label-classes* nil
+  "List of CSS classes to put on the <label> that contains each radio field")
 
 (defun class-attributes (classes)
   `(class ,(format nil "~{~a~^ ~}" classes)))
@@ -194,7 +200,7 @@ corresponding value."
                                  `(value ,val)) ,@html-attrs))
      name)))
 
-(defun select-input (val options &optional select-attrs option-attrs multiple)
+(defun select-like-input (val options multiple outer-fn inner-fn)
   (conformlet (:places val :names name)
 
     (custom-event
@@ -208,15 +214,47 @@ corresponding value."
                     (str->option name))))))
 
     (values
-     `(select (name ,name ,@(when multiple `(multiple t)) ,@select-attrs)
-              ,(loop for (option-val option-text) in options
-                  for i from 0
-                  for selected = (member option-val (if multiple val (list val)))
-                  collect `(option (value ,i
-                                          ,@(when selected
-                                              `(selected t))
-                                          ,@option-attrs)
-                                   ,option-text)))
+     (funcall outer-fn name
+              (loop for (option-val option-text) in options
+                 for i from 0
+                 for selected = (member option-val (if multiple val (list val)))
+                 collect (funcall inner-fn name i selected option-text)))
+     name)))
+
+(defun select-input (val options &optional multiple select-attrs option-attrs)
+  (select-like-input val options multiple
+                     (lambda (name inner-html)
+                       `(select (name ,name ,@(when multiple '(multiple t)) ,@select-attrs)
+                                ,inner-html))
+                     (lambda (name value selected text)
+                       (declare (ignore name))
+                       `(option (value ,value ,@(when selected '(selected t)) ,@option-attrs)
+                                ,text))))
+
+(defun radio-input (val options &optional div-attrs label-attrs input-attrs)
+  (select-like-input val options nil
+                     (lambda (name inner-html)
+                       (declare (ignore name))
+                       `(div ,div-attrs
+                             ,inner-html))
+                     (lambda (name value selected text)
+                       `(label (for ,name ,@label-attrs)
+                               (input (type "radio" name ,name value ,value
+                                            ,@(when selected '(checked t))
+                                            ,@input-attrs))
+                               ,text))))
+
+(defun checkbox-input (val &optional html-attrs)
+  (conformlet (:places val :names name)
+    (custom-event
+      ;; unlike string-conformlet, we unconditionally 
+      (setf val (not (not name))))
+
+    (values
+     `(input (type "checkbox" value "T" name ,name
+                   ,@(when val
+                       '(checked t))
+                   ,@html-attrs))
      name)))
 
 (defun button (onclick text &rest html-attrs)
@@ -256,9 +294,9 @@ corresponding value."
 (defun string-field (val label
                      &rest html-attrs
                      &key textarea
-                       (validate (constantly t)) (error "String validation error")
-                       &allow-other-keys)
-  "A string field, with the given label. validate checks the field's validity and error is the
+                         (validate (constantly t)) (error "String validation error")
+                         &allow-other-keys)
+    "A string field, with the given label. validate checks the field's validity and error is the
 message to push on failure. textarea, if set, causes a <textarea> to be used instead of <input>."
   (delete-from-plistf html-attrs :validate :error :textarea)
   (field val label validate error (rcurry #'string-input html-attrs (if textarea 'textarea 'input))))
@@ -266,8 +304,17 @@ message to push on failure. textarea, if set, causes a <textarea> to be used ins
 (defun select-field (val label options
                      &key (validate (constantly t)) (error "Select validation error") multiple)
   ;; TODO: docs
-  (field val validate error label
-         (select-input options (class-attributes *select-classes*) nil multiple)))
+  (field val label validate error
+         (rcurry #'select-input multiple options (class-attributes *select-classes*) nil multiple)))
+
+(defun radio-field (val options label
+                    &key (validate (constantly t)) (error "Select validation error"))
+  ;; TODO: docs
+  (field val label validate error
+         (rcurry #'radio-input options
+                 (class-attributes *radio-container-classes*)
+                 (class-attributes *radio-label-classes*)
+                 nil)))
 
 (defun confirm-password-field (val label-1 label-2
                                &key
@@ -293,6 +340,10 @@ message to push on failure. textarea, if set, causes a <textarea> to be used ins
 
       `(,(string-field (place pw1) label-1 :type "password")
          ,(string-field (place pw2) label-2 :type "password")))))
+
+(defun checkbox-field (val label &key (validate (constantly t)) (error "Checkbox validation error"))
+  (field val label validate error
+         #'checkbox-input))
 
 (defgeneric default-conformlet (val val-place)
   (:documentation "Instantiate a conformlet for the given value. The value is passed as the first

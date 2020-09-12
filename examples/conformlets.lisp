@@ -15,6 +15,39 @@
     (rplaca cons1 (car cons2))
     (rplaca cons2 temp)))
 
+(defclass profile ()
+  ((first-name :initform "")
+   (last-name :initform "")
+   (password :initform "password")
+   (accepted-tos :initform nil)))
+
+(defun profile-conformlet (profile)
+  (conformlet (:places profile)
+    (with-slots (first-name last-name password accepted-tos gender)
+        profile
+
+      `(div (class "profile-editor")
+
+            (h2 () "Profile details")
+            ,(string-field (place first-name) "First Name" :placeholder "John")
+            ,(string-field (place last-name) "Last Name" :placeholder "Doe")
+            ,(checkbox-field (place accepted-tos) "Accepted Terms of Service")
+            ;; ,(radio-field (place gender) '((:male "Male")
+            ;;                                (:female "Female")
+            ;;                                (:classified "Classified"))
+            ;;               "Gender")
+
+            (h2 () "Change Password")
+            ;; the confirm-password-field does not display the passed-in :val -- it only updates it,
+            ;; an only when the fields are equal.
+            ,(confirm-password-field (place password)
+                                     "New Password" "Confirm Password"
+                                     :validate (lambda (new-val)
+                                                 (member #\? (coerce new-val 'list)))
+                                     :error "Password must contain a question mark"
+                                     :confirm-error "Enter the same password, thumbass!"
+                                     :suppress-error-when-empty t)))))
+
 (defun advanced-list (val subconformlet make-default)
   (declare (function subconformlet make-default))
   (conformlet (:places val)
@@ -85,3 +118,4 @@
                   (td ()  "CAR: ") ,(cons-cell (place (car val))))
               (tr ()
                   (td () "CDR: ") ,(cons-cell (place (cdr val))))))))
+

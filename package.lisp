@@ -8,17 +8,23 @@
    #:with-places
 
    #:conformlet
-   #:render-conformlet
+   #:render-form
 
    #:string-input
    #:select-input
+   #:checkbox-input
+   #:radio-input
    #:button
    #:string-field
    #:select-field
+   #:checkbox-field
+   #:radio-field
    #:confirm-password-field
 
    #:*form-errors*
    #:*field-classes*
    #:*string-classes*
    #:*select-classes*
+   #:*radio-container-classes*
+   #:*radio-label-classes*
    ))

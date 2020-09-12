@@ -230,133 +230,153 @@
 * Conform: An improvement on Formlets
    A Common Lisp library for constructing interactive, composable HTML forms,
    entirely on the server-side; no JavaScript is necessary.
-   + Interactive: The way a form part is rendered may change depending on the
-     user's actions. For example, a resizeable list with "add" and "remove"
-     buttons is possible. Each element of the list can contain more form fields!
-     Form field validation also falls under the banner of interactivity.
-   + Composable: Parts of a form can be re-used. For example, there might be a
-     datepicker form element that you will want to include in multiple places
-     throughout a form. "Higher-order" parts of a form are also possible, for
-     example, a resizeable list of arbitrary sub-conformlets.
-   The most well-known solution to server-side form composability, was presented
-   in a 2008 paper, [[https://links-lang.org/papers/formlets-essence.pdf][The Essence of Form Abstraction]]. Formlets, the name of the
-   solution presented in that paper, have since been implemented in many
-   programming languages, including [[https://docs.racket-lang.org/web-server/formlets.html][Racket]] and [[https://github.com/Inaimathi/formlets][Common Lisp]]. Formlets achieve
-   composability, but not interactivity. It's impossible to define a "list"
-   formlet that contains a varying number of child formlets based on which
-   buttons the user clicks.
+
+   + Interactive: The way a "conformlet" is rendered may change depending on the user's actions. For
+     example, a resizeable list with "add" and "remove" buttons is possible. Each element of the
+     list can contain more form fields! Form field validation also falls under the banner of
+     interactivity.
+   + Composable: Parts of a form can be re-used. For example, there might be a datepicker form
+     element that you will want to include in multiple places throughout a form. "Higher-order"
+     parts of a form are also possible, for example, a resizeable list of arbitrary sub-conformlets.
+
+   The most well-known solution to server-side form composability, was presented in a 2008 paper,
+   [[https://links-lang.org/papers/formlets-essence.pdf][The Essence of Form Abstraction]]. Formlets, the name of the solution presented in that paper, have
+   since been implemented in many programming languages, including [[https://docs.racket-lang.org/web-server/formlets.html][Racket]] and [[https://github.com/Inaimathi/formlets][Common Lisp]]. Formlets
+   achieve composability, but not interactivity. It's impossible to define a "list" formlet that
+   contains a varying number of child formlets based on which buttons the user clicks.
 
    Conform still uses a formlet-like design, so we credit the paper's authors by
    naming each composable form component a "conformlet".
    
-   Conform is optimized for making forms that represent a persistent server-side
-   object, rather than forms you prepare and then submit once. For instance,
-   Conform would be a great choice for rendering an "edit profile" page.
+   Conform is optimized for making forms that represent a persistent server-side object, rather than
+   forms you prepare and then submit once. For instance, Conform would be a great choice for:
+   + An "edit profile" page.
+   + A page editor for a CMS (Content Management System).
    
-   Conform is not tightly coupled to any web server. However, all built-in
-   conformlets, and all the examples here, are tied to a certain HTML generator:
-   [[https://gist.github.com/markasoftware/ab357f1b967b3f656d026e33fec3bc0e][html->string]]. You may find it helpful to read the html->string documentation
-   before continuing. To use any other HTML generator you would have to
-   reimplement all built-in conformlets, but wouldn't have to mess with the
+   Conform is not tightly coupled to any web server. However, all built-in conformlets, and all the
+   examples here, are tied to a certain HTML generator: [[https://gist.github.com/markasoftware/ab357f1b967b3f656d026e33fec3bc0e][html->string]]. You may find it helpful to
+   read the html->string documentation before reading the examples. To use any other HTML generator
+   you would have to reimplement all built-in conformlets, but wouldn't have to mess with the
    Conform framework itself.
 ** Installation
-   Conform will be available on Quicklisp soon, hopefully. Until then, just put
-   the project directory into an asdf load path.
+   Conform will be available on Quicklisp soon, hopefully. Until then, just put the project
+   directory into your local Quicklisp directory (eg, ~\~/quicklisp/local-projects/~), then run
+   ~(ql:quickload :conform)~
 ** Running the examples
-   `(conform/examples:start 4321)` starts a Hunchentoot server on
-   http://localhost:4321 with the Conform examples.
-** Simple field composition
+   Load the ~conform/examples~ system, then run ~(conform/examples:start 4321)~ to start a
+   Hunchentoot server on http://localhost:4321 with a few Conform examples.
+** Aside: Place utilities
+   Conform includes two macros, ~place~ and ~with-places~, that simplify passing a mutable object as
+   an argument to a function. ~(place (car \*my-list\*))~ will expand into something to the effect
+   of ~(cons (lambda () (car \*my-list\*)) (lambda (new-val) (rplaca \*my-list\* new-val)))~, ie, a
+   cons cell containing a reader and writer for the given place, respectively. ~(with-places)~ can
+   then be used to take a result of ~(place)~ and bind it to what seems a normal, ~setf~-able variable:
+
+   #+BEGIN_SRC lisp
+     (let ((foo (place (car *my-list*))))
+       (with-places (foo)
+         (incf foo)))
+     ;; equivalent to (incf (car *my-list*))
+   #+END_SRC
+   
+   This is used in Conform to simplify passing part of a data structure to a subconformlet. For
+   example, in an edit profile conformlet, you might want to pass the user's first name to the
+   ~string-field~ conformlet, allowing the ~string-field~ to both read and update the first name.
+   This could be achieved by passing ~(place (slot-value *profile* 'first-name))~ to ~string-field~,
+   for example.
+** Simple conformlets
    Before we can talk about the juicy interactive conformlets, we have to
    discuss how to make a simple conformlet. Here's one:
 
    #+BEGIN_SRC lisp
-     (defun full-name ()
-       ;; val should be of the form ("first-name" . "last-name")
-       (conformlet (:val val)
-        `(div (class "full-name-field")
-              ,(conform (string-field "First Name")
-                        ;; the data argument becomes the "val" for the sub-conformlet.
-                        :val (car val))
-              ,(conform (string-field "Last Name")
-                        :val (cdr val)))))
+     (defun full-name (val)
+       "val should be of the form (\"first-name\" . \"last-name\")"
+       (with-places val
+         (conformlet ()
+           `(div (class "full-name-field")
+                 ,(string-field (place (car val))
+                                "First Name")
+                 ,(string-field (place (cdr val))
+                                "Last Name")))))
    #+END_SRC
    
-   ~conformlet~ is used to create a new conformlet. ~conform~ is used to
-   instantiate a child conformlet. ~conform~ is a lexically scoped macro only
-   available within ~conformlet~.
-   
-   The ~:val~ argument to ~conform~ is passed as the ~:val~ argument of
-   corresponding conformlet. It can be updated using ~setf~, which updates the
-   corresponding place in the parent conformlet.
-   
-   In the ~full-name~ example, we could have just done ~(defvar \*full-name\*
-   (conformlet ...))~, but it's better to be consistent by always using
-   functions to generate conformlets, because sometimes you want to accept
-   configuration options as arguments.
+   First, note that our conformlet is just a function -- there's no ~defconformlet~ or similar.
+   Second, ~val~ is passed in as a ~(place)~, as described in the last section, so we can both read
+   and write it. Finally, note that there is no special function call required to instantiate a
+   sub-conformlet (~string-field~, in this case); we just call it! The ~string-field~ conformlets
+   modify the place passed in as a value every time the form is submitted.
 
-   Here's another conformlet: A number with buttons to increase or decrease it
-   by a certain amount:
+   Here's another conformlet: A number with buttons to increase or decrease it by a certain amount.
    
    #+BEGIN_SRC lisp
-     (defun onerous-number (delta)
-       (conformlet (:val val)
-         (declare (integer val))
+     (defun onerous-number (val delta)
+       (conformlet (:places val)
          `(div (class "onerous-number")
                "The number currently is: " val
-               (conform (button-field "Increment it")
-                        :onclick (lambda () (incf val delta)))
-               (conform (button-field "Decrement it")
-                        :onclick (lambda () (decf val delta))))))
+               ,(button (lambda () (incf val delta))
+                        "Increment")
+               ,(button (lambda () (decf val delta))
+                        "Decrement"))))
    #+END_SRC
    
-   There are a few new things to see here:
-   + A ~delta~ parameter captured in a closure around ~conformlet~ makes it easy
-     to configure.
-   + ~declare~, which I could have used in the first example, too.
-   + Direct modification of val, not just parts of val (such as car or cdr).
-   + Button conformlets that do not take a ~:val~ argument.
+   In the ~full-name~ example, we explicitly wrote ~with-places~. In ~onerous-number~, though, we
+   provide the ~:places~ argument to ~conformlet~, which is shorthand for the same thing.
+
+   The first argument to each ~button~ is an "Onclick Event Handler", which is called when the
+   button is pressed. Remember that Conform does not use JavaScript, so all buttons trigger a form
+   submission and page reload.
      
    Here's a "higher-order" conformlet that duplicates a field:
 
    #+BEGIN_SRC lisp
-     (defun duplicator (subconformlet)
-       (conformlet (:val val)
+     (defun duplicator (val subconformlet)
+       "Call subconformlet on both cells of val, which should be cons."
+       (conformlet (:places val)
          `(div (class "duplicator")
-               ,(conform subconformlet :val (car val))
-               ,(conform subconformlet :val (cdr val)))))
-   #+END_SRC
-
-   By default, ~:val~ tells subconformlets not only where to get their data
-   from, but where to store their data to. If you specify an ~:onsubmit~ event
-   handler, the "return" data from the subconformlet will be passed there
-   instead of automatically being stored to the place indicated by ~:val~.
-   /However/, a subconformlet may modify parts (eg, cells) of ~:val~ even if you
-   specify a custom ~:onsubmit~ handler; the subconformlet simply cannot replace
-   ~:val~ itself.
-   
-   #+BEGIN_SRC lisp
-     (defun uppercase-field (subconformlet)
-       (conformlet (:val val)
-         (declare (string val))
-         (conform subconformlet
-                  :val val
-                  :onsubmit (lambda (new-val)
-                              (setf val (string-upcase new-val)))))
+               ,(funcall subconformlet (place (car val)))
+               ,(funcall subconformlet (place (cdr val))))))
    #+END_SRC
    
-   The val and onsubmit stuff is handled automatically when /definining/ a
-   conformlet. Simply modify ~val~ directly, and Conform will store to the
-   parent's ~:val~ or call its ~:onsubmit~ as appropriate.
-   
-   Custom events! So far you've only seen events defined on built-in conformlets
-   (namely as ~:onclick~ for buttons) and ~:onsubmit~, which is automatically
-   generated for all conformlets that take a ~val~. Here's a different
-   conformlet, that does /not/ take a ~val~, and that has a custom event
-   handler, ~:onagree~:
+   The subconformlet should be a function that takes, as a single argument, a ~(place)~ output. For
+   example, to use ~onerous-number~ with a delta of 4 as the subconformlet:
 
    #+BEGIN_SRC lisp
-     (defun legal-agreements ()
-       (conformlet (:extra-args (onagree))
+     (duplicator (place *my-cons-cell*) (rcurry #'onerous-number 4))
+   #+END_SRC
+   
+   ~curry~ and ~rcurry~ are very common when handling higher-order conformlets.
+   
+   Recall that ~(place)~ expands into a cons cell of reader and writer. If you don't want the
+   sub-conformlet to directly write to place, you can manually specify the reader and writer instead
+   of using ~place~ to generate them automatically:
+   
+   #+BEGIN_SRC lisp
+     (defun uppercase-string (val)
+       (conformlet (:places val)
+         (string-field (cons
+                        (lambda ()
+                          val)
+                        (lambda (new-val)
+                          (setf val (string-upcase new-val))))
+                       "Enter string:")))
+   #+END_SRC
+   
+   Here, the "reader" always returns val, but the "writer" uppercases the value before setting
+   ~val~. To clarify, when a conformlet that uses ~with-places~ runs ~(setf val "foo")~ the writer
+   of the place is called.
+   
+   Conform has separate "render" and "event handling" phases. The "render" phase only generates
+   HTML, with no side effects. The "event handling" phase is when the form responds to the POST
+   data. In the ~uppercase-string~ conformlet, for example, the writer is called during the event
+   handling stage. In the ~onerous-number~ example, the lambdas on the ~button~ conformlets are
+   called during event handling, too.
+   
+   The ~legal-agreements~ conformlet calls a function passed as an argument only when the user has
+   checked all of the boxes.
+
+   #+BEGIN_SRC lisp
+     (defun legal-agreements (onagree)
+       (conformlet ()
          (let ((agreed-tos)
                (agreed-privacy-policy)
                (agreed-forfeit-assets))
@@ -367,89 +387,109 @@
               (funcall onagree)))
 
            `(div (class "legal-agreements")
-                 ,(conform (checkbox-field "Do you agree to the terms of service?")
-                           :val agreed-tos)
-                 ,(conform (checkbox-field "Do you agree to the privacy policy?")
-                           :val agreed-privacy-policy)
-                 ,(conform (checkbox-field "Do you agree to forfeit all of your assets
-                                          to EvilCorp LLC, permanently?")
-                           :val agreed-forfeit-assets)))))
+                 ,(checkbox-field (place agreed-tos)
+                                  "Do you agree to the terms of service?")
+                 ,(checkbox-field (place agreed-privacy-policy)
+                                  "Do you agree to the privacy policy?")
+                 ,(checkbox-field (place agreed-forfeit-assets)
+                                  "Do you agree to forfeit all of your assets to EvilCorp LLC?")))))
    #+END_SRC
    
-   Do /not/ use ~:extra-args~ to specify configuration-esque options; put those
-   as arguments to the top-level ~defun~. ~:extra-args~ should usually be used
-   for event handlers.
+   Pretty cool! This also demonstrates a common pattern: Passing local variables to sub-conformlets,
+   then using a ~custom-event~ to process those local variables and conditionally pass something on
+   to the parent conformlet (in this case, calling ~onagree~). Here's how the messy
+   ~uppercase-string~ from above could be adapted to this pattern:
    
-   Sometimes the order that the events handlers of children are called is
-   important. Say I want a field with a "reset" button next to it that restores
-   some default value. The reset button's ~onclick~ handler will reset the field
-   to the default value. The ~onsubmit~ handler on the field itself will store
-   the user's enteredvalue. If ~onclick~ is called before ~onsubmit~, it will be
-   impossible to actually reset the field! Luckily, we can do this:
-
    #+BEGIN_SRC lisp
-     (defun resettable-field (subconformlet default)
-       (conformlet (:val val)
-        `(div (class "resettable")
-              ,(conform (button-field "Reset")
-                        :onclick (lambda () (setf val default))
-                        :order 100)
-              ,(conform subconformlet
-                        :val val))))
+     (defun uppercase-string-2 (val)
+       (conformlet (:places val)
+                   (let ((temp val))
+
+                     (custom-event
+                      (setf val (string-upcase temp)))
+
+                     (string-field (place temp) "Enter string:"))))
    #+END_SRC
    
-   The default ~:order~ is zero, so the event handlers on the button field (and
-   any of its descendants, of which there are none) are called after the event
-   handler on the main field.
+   # Sometimes the order that the events handlers of children are called is
+   # important. Say I want a field with a "reset" button next to it that restores
+   # some default value. The reset button's ~onclick~ handler will reset the field
+   # to the default value. The ~onsubmit~ handler on the field itself will store
+   # the user's enteredvalue. If ~onclick~ is called before ~onsubmit~, it will be
+   # impossible to actually reset the field! Luckily, we can do this:
+
+   # #+BEGIN_SRC lisp
+   #   (defun resettable-field (subconformlet default)
+   #     (conformlet (:val val)
+   #      `(div (class "resettable")
+   #            ,(conform (button-field "Reset")
+   #                      :onclick (lambda () (setf val default))
+   #                      :order 100)
+   #            ,(conform subconformlet
+   #                      :val val))))
+   # #+END_SRC
+   
+   # The default ~:order~ is zero, so the event handlers on the button field (and
+   # any of its descendants, of which there are none) are called after the event
+   # handler on the main field.
 ** Interactive Conformlets
    Here comes the fun part!
    
    #+BEGIN_SRC lisp
-     (defun simple-list (subconformlet default)
-       (conformlet (:val val)
+     (defun simple-list (val subconformlet default)
+       (conformlet (:places val)
         `(div (class "simple-list")
-              ,(loop for item in val
-                  collect (conform subconformlet :val item))
+              ,(loop for i from 0 below (length val)
+                  collect (let ((k i))
+                            (funcall subconformlet (place (nth k val)))))
               ,(conform (button-field "Add New")
-                        :onclick (lambda () (metatilities:push-end default val))))))
+                        :onclick (lambda () (appendf val (list default)))))))
    #+END_SRC
    
-   Ain't that easy? Here's a more advanced list:
+   Ain't that easy? Note the important binding of ~k~ to ~i~, which is necessary to ensure that the
+   current value is captured during each iteration, else all the subconformlets would refer to the
+   same ~i~, which would, at the end of iteration, equal ~(length val)~. Here's a more advanced
+   list:
    
    #+BEGIN_SRC lisp
-     (defun better-list (subconformlet default-options)
-       "Default-options should be in the same format as the main argument to select-field. Eg:
-             ((45 \"Forty Five\") (:beep \"Beep\"))
-        will present two options, labeled
-        Forty Five and Beep, which will select the values 45 and :beep,
-        respectively."
-       (conformlet (:val val)
+     (defun swapcar (cons1 cons2)
+       (declare (cons cons1 cons2))
+       (let ((temp (car cons1)))
+         (rplaca cons1 (car cons2))
+         (rplaca cons2 temp)))
 
-        (let ((selected-option (caar default-options)))
+     (defun advanced-list (val subconformlet make-default)
+       (declare (function subconformlet make-default))
+       (conformlet (:places val)
+         `(div (class "form-list")
+               ,(loop for i from 0 below (length val)
+                   collect (let ((k i))      ; capture the value
+                             `(div ()
+                                   ,(funcall subconformlet (place (nth k val)))
 
-          `(div (class "better-list")
-
-                ,(loop for item in val
-                    for i from 0
-                    collect `(div (class "better-list-item")
-                                  ,(conform subconformlet :val item)
-                                  ,(conform (button-field "Delete item")
-                                            :onclick (let ((k i)) ; otherwise, i = (length val) after
-                                                                  ; iteration completes.
-                                                       (lambda ()
-                                                         (metatilities:delete-item-at val k)))))))
-
-                ,(conform (select-field default-options
-                                        :val selected-option))
-                ,(conform (button-field "Add New")
-                          :onclick (lambda () (metatilities:push-end selected-option val)))))))
+                                   (div ()
+                                        ,(button (lambda () (metatilities:delete-item-at val k)) "Delete")
+                                        ,(when (> k 0)
+                                           (button (lambda ()
+                                                     (swapcar (nthcdr (1- k) val)
+                                                              (nthcdr k val)))
+                                                   "Move up"))
+                                        ,(when (< k (1- (length val)))
+                                           (button (lambda ()
+                                                     (swapcar (nthcdr k val)
+                                                              (nthcdr (1+ k) val)))
+                                                   "Move down"))))))
+               (div (class "pure-controls")
+                    ,(button (lambda ()
+                               (appendf val (list (funcall make-default))))
+                             "Add new")
+                    ,(button (lambda ()
+                               (setf val (shuffle val)))
+                             "Shuffle")
+                    ,(button (lambda ()
+                               (setf val (nthcdr (ceiling (length val) 2) (shuffle val))))
+                             "Thanos")))))
    #+END_SRC
-   
-   We've added an option to delete each item of the list, and provide multiple
-   options for the "add new" button. Note that although event order is important
-   (eg, the subconformlet for the main list data must fire before the delete
-   handler), we don't explicitly specify an order; by default, events occur in
-   the order that the conformlets are instantiated.
 ** Rendering a form: ~render-form~
    Once you've defined all the conformlets you need, render the form:
    
@@ -457,49 +497,43 @@
      (html->string
       `(form (method "POST" action "")
              ,(render-form "form_prefix" #'hunchentoot:post-parameter
-                           (some-field) :val whatever)
+                           (some-conformlet))
              (button (type "submit") "Submit form")))
    #+END_SRC
    
-   The first argument to ~render-form~ is a prefix that will be added to
-   the ~name~ attributes of all fields. The next argument is a function that
-   returns the value of a post parameter, given the string name of the post
-   parameter. The final parameter is a conformlet that will not be passed any
-   instance arguments (such as values or event listeners).
+   The first argument to ~render-form~ is a prefix that will be added to the ~name~ attributes of
+   all fields. The next argument is a function that returns the value of a post parameter, given the
+   string name of the post parameter. The rest of the arguments are evaluated in an implicit
+   ~conformlet~ statement.
 ** The elephant in the room: Validation
    Every form framework has validation utilities. Even the original formlet
    paper discusses a simple extension to the basic formlet system for it!
    Unfortunately, the most user-friendly form validation doesn't play together
    nicely with interactive forms, so we have to make compromises.
 
-   There are a few different ways to display the results of form validation. One
-   is to display all validation failures at the top of the page. Another is to
-   display validation failures right alongside the field that failed to
-   validate. The latter approach is problematic in Conform; it breaks the
-   important property that conformlets are pure functions of the ~val~ passed
-   in: the error message should only be displayed when the field fails
-   validation (during event handling), which means we need to store a boolean
-   ~failed-validation-p~ somewhere. We can't store the boolean in ~val~ since
-   it's not logically part of the conformlet's value (we don't want to return it
-   to the parent conformlet). Keeping track of arbitrary local state for each
-   conformlet is not trivial; each conformlet would need to keep track of "which
-   is which" among their children conformlets. For example, if you re-order
-   items of a list, you would need to somehow communicate that the conformlets
-   were rearranged, not just that the ~val~ was rearranged. React (a JavaScript
-   UI framework) has similar issues, and even their overengineered solution is
-   often requires manual intervention when dealing with editable lists.
+   There are a few different ways to display the results of form validation. One is to display all
+   validation failures at the top of the page. Another is to display validation failures right
+   alongside the field that failed to validate. The latter approach is problematic in Conform; it
+   breaks the important property that conformlets are pure functions of their arguments. Keeping
+   track of arbitrary local state for each conformlet is not trivial; each conformlet would need to
+   keep track of "which is which" among their children conformlets. For example, if you re-order
+   items of a list, you would need to somehow communicate that the conformlets were rearranged, not
+   just that the ~val~ was rearranged. React (a JavaScript UI framework) encounters similar issues,
+   and even their overengineered solution often requires manual intervention.
 
    Thus, the limit of Conform's validation is sad stuff like this:
 
    #+BEGIN_SRC lisp
-     (defun verified-string (verifier error-text &rest string-field-args)
-       (conformlet (:val val)
-                   (conform (apply #'string-field string-field-args)
-                            :val val
-                            :onsubmit (lambda (new-val)
-                                        (if (funcall verifier new-val)
-                                            (setf val new-val)
-                                            (push error-text *form-errors*))))))
+     (defun verified-string (val verifier error-text label)
+       (conformlet (:places val)
+         (let ((unverified-val val))
+
+           (custom-event
+            (if (funcall verifier unverified-val)
+                (setf val unverified-val)
+                (push error-text *form-errors*)))
+
+           (string-field (place unverified-val) label))))
    #+END_SRC
    
    You need some top level code to display the errors:
@@ -511,7 +545,7 @@
          `(form (method "POST" action "")
                 ,(loop for error in *form-errors*
                     collect `(div (class "form-validation-error") ,error))
-                (conform (some-other-conformlet) :val whatever))))
+                (some-other-conformlet))))
    #+END_SRC
    
    I think having only top-level errors is acceptable for a couple reasons:
@@ -524,18 +558,67 @@
    + HTML5 supports a lot of form validation, even with JavaScript disabled,
      through attributes such as [[https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attr-maxlength][maxlength]] and field types such as [[https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/url][url]], to help
      the user find errors before submitting.
+** How it Works
+   Conform works in three stages:
+   1. First Render stage: The form is rendered using whatever data was present before the user
+      submitted. This render should yield the exact same form that was originally served to the
+      user. The purpose of the first render stage is to determine which event handlers should be
+      registered. The HTML output of this stage is discarded.
+   2. Event Handling stage: Now that we know which events exist, they are executed as appropriate.
+   3. Second Render stage: Now that the data has been updated by events, the form is re-rendered to
+      reflect those changes.
+*** Preventing form submission with stale data
+    The First Render stage relies on the persistent data not having changed since the user loaded
+    the form. This assumption could be broken if the user has multiple tabs open, modifies the data
+    in one tab, then submits the form in the other tab. For example, if there's a list present, then
+    in one tab the user deletes an item from the list, it's impossible to meaningfully process the
+    other form's eventual submission because it contains data about a field that no longer exists.
+    
+    It is unsafe to process a form submission after the underlying data has been changed, with
+    consequences ranging from runtime errors to data corruption. Here's a strategy for detecting
+    and preventing unsafe scenarios:
+
+    #+BEGIN_SRC lisp
+      (defun change-protect (val mtime-place subconformlet)
+        (conformlet (:places (val mtime-place))
+                    (let ((new-mtime (get-universal-time)))
+                      `(,(string-input (cons (constantly new-mtime)
+                                             (lambda (last-mtime)
+                                               ;; non-local jump if mtime is not what we expected.
+                                               (assert (= last-mtime mtime-place))
+                                               (setf mtime-place new-mtime)))
+                                       '(type "hidden"))
+
+                         ;; ensure that mtime is processed first
+                         (conformlet (:order 1)
+                                     ,(funcall subconformlet (place val)))))))
+    #+END_SRC
+    
+    It uses a special hidden ~<input>~ which stores the last time the form was rendered. This must
+    be persisted somewhere, and the persistence location passed as ~mtime-place~. If the form is
+    submitted, and the stored render time is not the same as the persisted one, it means that the
+    ~val~ may have been modified since the form was rendered, and the form should not be safely
+    processed. You may want to throw a custom condition instead of just calling ~assert~ so that you
+    can catch it and display an appropriate page to the user. It's necessary to perform a non-local
+    jump, because there is no other way to "abort" the pending event handlers.
 ** Other important stuff
+*** Built-in Fields
+    Read the function documentation strings for the built-in fields to learn about them.
 *** Side effects
     The body of a ~conformlet~ form mustn't cause side effects. It's alright to
-    have side effects in an event handler, however.
+    have side effects in event handlers, though.
 *** Order
-    Each child conformlet is given an Order:
-    1. Children with ~:order~ passed explicitly to ~conform~ are given the Order specified.
-    2. Any child that does not have an explicit Order is given a default Order
-       for that conformlet, specified using ~:order~ in the options argument of
-       ~conformlet~.
-    3. Any child that still does not have an Order is given an Order of zero.
-    The events of the children are evaluated from least to greatest Order. If
-    two children have the same Order, their event handlers are evaluated in the
-    order the children were instantiated.
-    
+    Sub-conformlet event handlers are ordered according to the ~:order~ parameter passed to their
+    ~conformlet~ statements. ~custom-event~ statements are executed after all sub-conformlet event
+    handlers. All built-in conformlets except for buttons have an order of 0. Buttons have an order
+    of 1, because buttons submit the form and thus a button press is the last thing that happens
+    before form submission. If multiple event handlers have the same order (very common, because
+    all non-button conformlets have an order of zero), their event handlers are executed in the
+    order the conformlets were instantiated during the render phase.
+
+    Order is "local" to the current ~conformlet~ statement. Eg, if you have the following structure:
+    + A: Top-level
+      + B: ~:order 2~
+        + C: ~:order 599~
+      + D: ~:order 5~
+    Conformlet D's event handlers will be executed /after/ conformlet C's.

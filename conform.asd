@@ -18,7 +18,7 @@
   :serial t
   :depends-on (#:conform #:alexandria #:hunchentoot)
   :pathname "examples"
-  :components ((:file "simple-conformlets")
+  :components ((:file "package")
                (:file "html")
-               (:file "interactive-conformlets")
+               (:file "conformlets")
                (:file "server")))
