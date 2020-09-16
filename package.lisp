@@ -10,6 +10,7 @@
 
    #:conformlet
    #:render-form
+   #:custom-event
 
    #:string-input
    #:select-input
