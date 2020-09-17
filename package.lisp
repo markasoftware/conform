@@ -23,6 +23,9 @@
    #:radio-field
    #:confirm-password-field
 
+   #:default-conformlet
+   #:auto-conformlet
+
    #:*form-errors*
    #:*field-classes*
    #:*string-classes*

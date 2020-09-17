@@ -188,7 +188,7 @@ input")
 ;;; -input conformlets return a cons: First, the inner HTML, and second, the name attribute used, so
 ;;; that a parent can use it in, say, a <label>. Multiple values wouldn't work because (conform) is a lexical /macro/, not function, so even though it expands into a function call, it
 
-(defun string-input (val &optional html-attrs (html-tag 'input))
+(defun string-input (val &optional textarea html-attrs)
   (conformlet (:places val :names name)
 
     (custom-event
@@ -197,8 +197,11 @@ input")
         (setf val name)))
 
     (values
-     `(,html-tag (name ,name ,@(when (stringp val)
-                                 `(value ,val)) ,@html-attrs))
+     `(,(if textarea 'textarea 'input)
+        (name ,name ,@(when (and (not textarea) (stringp val))
+                        `(value ,val)) ,@html-attrs)
+        ,(when (and textarea (stringp val))
+           val))
      name)))
 
 (defun select-like-input (val options multiple outer-fn inner-fn)
@@ -300,7 +303,7 @@ input")
     "A string field, with the given label. validate checks the field's validity and error is the
 message to push on failure. textarea, if set, causes a <textarea> to be used instead of <input>."
   (delete-from-plistf html-attrs :validate :error :textarea)
-  (field val label validate error (rcurry #'string-input html-attrs (if textarea 'textarea 'input))))
+  (field val label validate error (rcurry #'string-input textarea html-attrs)))
 
 (defun select-field (val label options
                      &key (validate (constantly t)) (error "Select validation error") multiple)
