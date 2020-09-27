@@ -256,9 +256,9 @@ features (which rely on knowing what the data "used to be" before each form subm
 with a creative way to persist the data (eg, cryptographically signing it and storing it in a hidden
 ~<input>~).
 
-Conform is not tightly coupled to any web server. However, all built-in conformlets, and all the
-examples here, are tied to a certain HTML generator: [[https://gist.github.com/markasoftware/ab357f1b967b3f656d026e33fec3bc0e][html->string]]. You may find it helpful to read
-the html->string documentation before reading the examples. To use any other HTML generator you
+Conform is not tightly coupled to any web server. That being said, all built-in conformlets, and all
+the examples here, are tied to a certain HTML generator: [[https://gist.github.com/markasoftware/ab357f1b967b3f656d026e33fec3bc0e][html->string]]. You may find it helpful to
+read the html->string documentation before reading the examples. To use any other HTML generator you
 would have to reimplement all built-in conformlets, but wouldn't have to mess with the Conform
 framework itself.
 * Installation
@@ -269,8 +269,7 @@ framework itself.
   Load the ~conform/examples~ system, then run ~(conform/examples:start 4321)~ to start a
   Hunchentoot server on [[http://localhost:4321]] with a few Conform examples.
   
-  At the time of writing, I run the example server at [[http://markasoftware.com:4321]] as well. I might
-  stop running this at any time, however.
+  At the time of writing, I run an example server at [[http://markasoftware.com:4321]].
 * Aside: Place utilities
   Conform includes two macros, ~place~ and ~with-places~, that simplify passing a mutable object as
   an argument to a function. ~(place (car \*my-list\*))~ will expand into something to the effect
@@ -296,7 +295,7 @@ framework itself.
 
   #+BEGIN_SRC lisp
     (defun full-name (val)
-      "val should be of the form (\"first-name\" . \"last-name\")"
+      "val should be a Place pointing to a cons (\"first-name\" . \"last-name\")"
       (with-places val
         (conformlet ()
           `(div (class "full-name-field")
@@ -307,10 +306,9 @@ framework itself.
   #+END_SRC
    
   First, note that our conformlet is just a function -- there's no ~defconformlet~ or similar.
-  Second, ~val~ is passed in as a ~(place)~, as described in the last section, so we can both read
-  and write it. Finally, note that there is no special function call required to instantiate a
-  sub-conformlet (~string-field~, in this case); we just call it! The ~string-field~ conformlets
-  modify the place passed in as a value every time the form is submitted.
+  Second, ~val~ is passed using ~(place)~, as described earlier, so we can both read and write it.
+  The ~string-field~ conformlets modify the place passed in as a value every time the form is
+  submitted.
 
   Here's another conformlet: A number with buttons to increase or decrease it by a certain amount.
    
@@ -328,15 +326,15 @@ framework itself.
   In the ~full-name~ example, we explicitly wrote ~with-places~. In ~onerous-number~, though, we
   provide the ~:places~ argument to ~conformlet~, which is shorthand for the same thing.
 
-  The first argument to each ~button~ is an "Onclick Event Handler", which is called when the
-  button is pressed. Remember that Conform does not use JavaScript, so all buttons trigger a form
-  submission and page reload.
+  The first argument to each ~button~ is an "Onclick Event Handler", which is called when the button
+  is pressed. Remember that Conform does not use JavaScript, so all buttons are of ~type="submit"~
+  and therefore trigger a form submission and page reload.
      
   Here's a "higher-order" conformlet that duplicates a field:
 
   #+BEGIN_SRC lisp
     (defun duplicator (val subconformlet)
-      "Call subconformlet on both cells of val, which should be cons."
+      "Call subconformlet on both cells of val, which should be a place pointing to a cons."
       (conformlet (:places val)
         `(div (class "duplicator")
               ,(funcall subconformlet (place (car val)))
@@ -351,6 +349,9 @@ framework itself.
   #+END_SRC
    
   ~curry~ and ~rcurry~ are very common when handling higher-order conformlets.
+  
+  Note that ~duplicator~ could actually be implemented without passing in ~val~ as a Place, because
+  it never ~setf~'s directly on ~val~.
    
   # Recall that ~(place)~ expands into a cons cell of reader and writer. If you don't want the
   # sub-conformlet to directly write to place, you can manually specify the reader and writer instead
@@ -371,14 +372,16 @@ framework itself.
   # ~val~. To clarify, when a conformlet that uses ~with-places~ runs ~(setf val "foo")~ the writer
   # of the place is called.
    
-  Conform has separate "render" and "event handling" phases. The "render" phase only generates
-  HTML, with no side effects. The "event handling" phase is when the form responds to the POST
-  data. In the ~uppercase-string~ conformlet, for example, the writer is called during the event
-  handling stage. In the ~onerous-number~ example, the lambdas on the ~button~ conformlets are
-  called during event handling, too.
+  Conform has separate "render" and "event handling" phases. The "render" phase only generates HTML,
+  with no side effects. The "event handling" phase is when the form responds to the POST data. For
+  example, in the ~onerous-number~ example, the lambdas on the ~button~ conformlets are called
+  during the event handling phase.
+  
+  We can introduce a ~(custom-event)~ that will be processed during the event handling phase, after
+  all other event handlers. This is useful for post-processing data from sub-conformlets.
    
-  The ~legal-agreements~ conformlet calls a function passed as an argument only when the user has
-  checked all of the boxes.
+  The following ~legal-agreements~ conformlet demonstrates using a custom event to implement a
+  custom event handler, ~onagree~, that is called only when all the boxes are checked.
 
   #+BEGIN_SRC lisp
     (defun legal-agreements (onagree)
@@ -438,6 +441,13 @@ framework itself.
   # The default ~:order~ is zero, so the event handlers on the button field (and
   # any of its descendants, of which there are none) are called after the event
   # handler on the main field.
+  
+  I mentioned that custom events are processed after all other events under the current conformlet.
+  It's possible to get finer control over the order in which the events of sub-conformlets are
+  processed.
+  
+  TODO: order example
+  #+END_SRC
 * Interactive Conformlets
   Here comes the fun part!
    
@@ -518,6 +528,18 @@ framework itself.
   string name of the post parameter. The third argument is a boolean indicating whether the current
   request contains a form submission; this will be nil on initial page load. The rest of the
   arguments are evaluated in an implicit ~conformlet~ statement.
+** Post-Redirect-Get
+   It's common to, after a POST request, redirect the user back to the same page to avoid breaking
+   the browser's back button. Implementation is trivial with Conform and Hunchentoot:
+
+   #+BEGIN_SRC lisp
+     (render-form "prefix" #'hunchentoot:post-parameter (eq :post (hunchentoot:request-method*))
+       (custom-event
+        (hunchentoot:redirect (hunchentoot:request-uri*)))
+       (rest-of-form-here))
+   #+END_SRC
+   
+   In case you're unfamiliar, ~hunchentoot:redirect~ causes a non-local exit.
 * The elephant in the room: Validation
   Every form framework has validation utilities. Even the original formlet
   paper discusses a simple extension to the basic formlet system for it!
@@ -580,39 +602,39 @@ framework itself.
   3. Second Render stage: Now that the data has been updated by events, the form is re-rendered to
      reflect those changes.
 ** Preventing form submission with stale data
-   The First Render stage relies on the persistent data not having changed since the user loaded
-   the form. This assumption could be broken if the user has multiple tabs open, modifies the data
-   in one tab, then submits the form in the other tab. For example, if there's a list present, then
-   in one tab the user deletes an item from the list, it's impossible to meaningfully process the
-   other form's eventual submission because it contains data about a field that no longer exists.
+   The First Render stage relies on the persistent data not having changed since the user loaded the
+   form. This assumption could be broken if the user has multiple tabs open, modifies the data in
+   one tab, then submits the form in the other tab. For example, if there's a list present, then in
+   one tab the user deletes an item from the list, it's impossible to meaningfully process the other
+   form's submission because it contains data about a field that no longer exists.
     
-   It is unsafe to process a form submission after the underlying data has been changed, with
-   consequences ranging from runtime errors to data corruption. Here's a strategy for detecting
-   and preventing unsafe scenarios:
+   Here's a strategy for detecting and preventing such unsafe scenarios:
 
    #+BEGIN_SRC lisp
      (defun change-protect (val mtime-place subconformlet)
        (conformlet (:places (val mtime-place))
-                   (let ((new-mtime (get-universal-time)))
-                     `(,(string-input (cons (constantly new-mtime)
-                                            (lambda (last-mtime)
-                                              ;; non-local jump if mtime is not what we expected.
-                                              (assert (= last-mtime mtime-place))
-                                              (setf mtime-place new-mtime)))
-                                      '(type "hidden"))
+         (let ((new-mtime (get-universal-time)))
+           ;; instead of using (place), manually specify getter and setter using cons. While it's
+           ;; possible to use (place), it's convoluted and requires additional sub-conformlets to get the
+           ;; ordering right
+           `(,(string-input (cons (constantly new-mtime)
+                                  (lambda (last-mtime)
+                                    ;; non-local jump if mtime is not what we expected.
+                                    (assert (= last-mtime mtime-place))
+                                    (setf mtime-place new-mtime)))
+                            '(type "hidden"))
 
-                        ;; ensure that mtime is processed first
-                        (conformlet (:order 1)
-                                    ,(funcall subconformlet (place val)))))))
+              ;; ensure that mtime is processed first
+              (conformlet (:order 1)
+                ,(funcall subconformlet (place val)))))))
    #+END_SRC
     
-   It uses a special hidden ~<input>~ which stores the last time the form was rendered. This must
-   be persisted somewhere, and the persistence location passed as ~mtime-place~. If the form is
+   It uses a special hidden ~<input>~ which stores the last time the form was rendered. This must be
+   persisted somewhere, and the persistence location passed as ~mtime-place~. If the form is
    submitted, and the stored render time is not the same as the persisted one, it means that the
    ~val~ may have been modified since the form was rendered, and the form should not be safely
-   processed. You may want to throw a custom condition instead of just calling ~assert~ so that you
-   can catch it and display an appropriate page to the user. It's necessary to perform a non-local
-   jump, because there is no other way to "abort" the pending event handlers.
+   processed. It's necessary to perform a non-local jump; there is no other way to "abort" the
+   pending event handlers.
 * Other important stuff
 ** Built-in Fields
    Read the function documentation strings for the built-in fields to learn about them.

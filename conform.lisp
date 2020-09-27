@@ -198,8 +198,8 @@ input")
 
     (values
      `(,(if textarea 'textarea 'input)
-        (name ,name ,@(when (and (not textarea) (stringp val))
-                        `(value ,val)) ,@html-attrs)
+        (name ,name id ,name ,@(when (and (not textarea) (stringp val))
+                                 `(value ,val)) ,@html-attrs)
         ,(when (and textarea (stringp val))
            val))
      name)))
@@ -255,20 +255,21 @@ input")
       (setf val (not (not name))))
 
     (values
-     `(input (type "checkbox" value "T" name ,name
+     `(input (type "checkbox" value "T" name ,name id ,name
                    ,@(when val
                        '(checked t))
                    ,@html-attrs))
      name)))
 
 (defun button (onclick text &rest html-attrs)
+  "Simple button conformlet. All buttons are submit buttons."
   (conformlet (:order 1 :names name)
 
     (custom-event
       (when name
         (funcall onclick)))
 
-    `(button (name ,name type "submit" ,@html-attrs)
+    `(button (name ,name id ,name type "submit" ,@html-attrs)
              ,text)))
 
 ;;; -field conformlets are higher-level than -input ones.
@@ -309,9 +310,9 @@ message to push on failure. textarea, if set, causes a <textarea> to be used ins
                      &key (validate (constantly t)) (error "Select validation error") multiple)
   ;; TODO: docs
   (field val label validate error
-         (rcurry #'select-input multiple options (class-attributes *select-classes*) nil multiple)))
+         (rcurry #'select-input options multiple (class-attributes *select-classes*) nil)))
 
-(defun radio-field (val options label
+(defun radio-field (val label options
                     &key (validate (constantly t)) (error "Select validation error"))
   ;; TODO: docs
   (field val label validate error
