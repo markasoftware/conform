@@ -282,8 +282,7 @@ input")
 
 (defun field (val label validate error input-conformlet)
   "Wraps an -input value conformlet with the given label."
-  (declare (string label)
-           (function input-conformlet
+  (declare (function input-conformlet
                      validate)
            (string error))
   (conformlet (:places val)
