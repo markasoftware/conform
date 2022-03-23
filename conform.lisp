@@ -80,7 +80,7 @@ under this conformlet will be evaluated compared to sibling conformlets (direct 
 parent conformlet parent as the one being defined).
 
 The ``Places'', if provided, are bound using ``with-places''. This is a convenience, since places
-are frequency used with conformlets. Providing places is equivalent to manually wrapping the
+are frequently used with conformlets. Providing places is equivalent to manually wrapping the
 conformlet call inside with-places.
 
 All ``Names'', if provided, are, during rendering, bound to strings that are suitable for use as the

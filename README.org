@@ -642,13 +642,24 @@ framework itself.
    The body of a ~conformlet~ form mustn't cause side effects. It's alright to
    have side effects in event handlers, though.
 ** Order
+   Say your form has a list of strings, plus a delete button next to each string that deletes it.
+   What if the user modifies a string and deletes said string, all in the same submission? Now we
+   see that "ordering" is important: As long as Conform processes the edit before the deletion, all
+   is well: The edit is peformed and then thrown away, in the same order that the user performed the
+   actions. Imagine what would happen if the deletion was processed first instead: The edit might be
+   applied to the wrong element of the list, or to an out-of-bounds element, causing an error.
+   Conform gives the developer control over the order in which events are executed to avoid these
+   issues.
+
    Sub-conformlet event handlers are ordered according to the ~:order~ parameter passed to their
    ~conformlet~ statements. ~custom-event~ statements are executed after all sub-conformlet event
    handlers. All built-in conformlets except for buttons have an order of 0. Buttons have an order
    of 1, because buttons submit the form and thus a button press is the last thing that happens
-   before form submission. If multiple event handlers have the same order (very common, because
-   all non-button conformlets have an order of zero), their event handlers are executed in the
-   order the conformlets were instantiated during the render phase.
+   before form submission. (This button rule means that Conform has the correct behavior by default
+   in the deletion scenario described in the preceding paragraph). If multiple event handlers have
+   the same order (very common, because all non-button conformlets have an order of zero), their
+   event handlers are executed in the order the conformlets were instantiated during the render
+   phase.
 
    Order is "local" to the current ~conformlet~ statement. Eg, if you have the following structure:
    + A: Top-level
